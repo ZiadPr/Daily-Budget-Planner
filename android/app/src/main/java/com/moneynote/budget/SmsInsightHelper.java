@@ -2,44 +2,42 @@ package com.moneynote.budget;
 
 import com.getcapacitor.JSObject;
 import java.text.DecimalFormat;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class SmsInsightHelper {
 
+    private static final int FLAGS = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE;
+    private static final Pattern LETTER_PATTERN = Pattern.compile("[A-Za-z\\u0600-\\u06FF]");
+    private static final Pattern NUMERIC_SENDER_PATTERN = Pattern.compile("^\\+?\\d{4,15}$");
+    private static final Pattern UNKNOWN_SENDER_PATTERN = Pattern.compile("^(unknown|unknown sender|مرسل غير معروف)$", FLAGS);
     private static final Pattern AMOUNT_PATTERN = Pattern.compile("\\b\\d+(?:[.,]\\d+)?\\b");
-    private static final Pattern PHONE_PATTERN = Pattern.compile("^(\\+20|0)?1[0125][0-9]{8}$");
-    private static final Pattern URL_PATTERN = Pattern.compile("https?://|bit\\.ly|t\\.me", Pattern.CASE_INSENSITIVE);
-    private static final Pattern BANK_PATTERN = Pattern.compile("bank|account|cib|nbe|qnb|instapay|fawry|wallet", Pattern.CASE_INSENSITIVE);
-    private static final Pattern URGENCY_PATTERN = Pattern.compile("urgent|blocked|suspended|verify now|immediately", Pattern.CASE_INSENSITIVE);
-    private static final Pattern CREDENTIAL_PATTERN = Pattern.compile("pin|otp|password|passcode|cvv", Pattern.CASE_INSENSITIVE);
-    private static final Pattern INCOME_PATTERN = Pattern.compile("deposit|salary|received|credit|added", Pattern.CASE_INSENSITIVE);
-    private static final Pattern EXPENSE_PATTERN = Pattern.compile("withdrawal|payment|purchase|paid|spent|debited", Pattern.CASE_INSENSITIVE);
-
-    private static final List<String> VERIFIED_SENDERS = Arrays.asList(
-        "cib",
-        "nbe",
-        "banquemisr",
-        "qnb",
-        "alexbank",
-        "hsbc",
-        "fawry",
-        "instapay",
-        "vfcash",
-        "orangemoney",
-        "vodafone",
-        "orange",
-        "etisalat",
-        "we"
+    private static final Pattern MONEY_CONTEXT_PATTERN = Pattern.compile(
+        "بنك|حساب|رصيد|بطاقة|فيزا|محفظة|تحويل|إيداع|سحب|خصم|دفع|فاتورة|instapay|fawry|cash|bank|account|balance|card|visa|wallet|transfer|deposit|withdrawal|payment|purchase",
+        FLAGS
+    );
+    private static final Pattern URL_PATTERN = Pattern.compile("https?://|www\\.|bit\\.ly|tinyurl|t\\.me|wa\\.me", FLAGS);
+    private static final Pattern URGENCY_PATTERN = Pattern.compile(
+        "محظور|موقوف|عاجل|فوري|تحقق الآن|آخر فرصة|استجابة فورية|urgent|blocked|suspended|verify now|immediately|final notice",
+        FLAGS
+    );
+    private static final Pattern CREDENTIAL_PATTERN = Pattern.compile(
+        "pin|otp|password|passcode|cvv|one[-\\s]?time password|كلمة السر|الرقم السري|رمز التحقق|رمز التأكيد|بيانات البطاقة",
+        FLAGS
+    );
+    private static final Pattern INCOME_PATTERN = Pattern.compile(
+        "إيداع|راتب|استلام|إضافة|تحويل وارد|تم إضافة|تم استلام|deposit|salary|received|credit|added|incoming transfer",
+        FLAGS
+    );
+    private static final Pattern EXPENSE_PATTERN = Pattern.compile(
+        "خصم|سحب|دفع|شراء|فاتورة|تحويل صادر|تم خصم|تم دفع|withdrawal|payment|purchase|paid|spent|debited|outgoing transfer",
+        FLAGS
     );
 
     private SmsInsightHelper() {}
 
     public static JSObject buildEvent(String sender, String body) {
-        String normalizedSender = sender == null || sender.trim().isEmpty() ? "Unknown" : sender.trim();
+        String normalizedSender = normalizeSender(sender);
         String normalizedBody = body == null ? "" : body.trim();
         double amount = extractAmount(normalizedBody);
         String type = detectType(normalizedBody);
@@ -59,6 +57,34 @@ public final class SmsInsightHelper {
         event.put("notificationTitle", "رسالة مالية جديدة • " + getStatusLabel(status));
         event.put("notificationBody", buildNotificationBody(normalizedSender, amount, status, type));
         return event;
+    }
+
+    private static String normalizeSender(String sender) {
+        if (sender == null || sender.trim().isEmpty()) {
+            return "Unknown";
+        }
+        return sender.trim();
+    }
+
+    private static String normalizeNumericSender(String sender) {
+        return sender.replaceAll("[\\s()\\-]+", "");
+    }
+
+    private static boolean isCarrierVerifiedSenderId(String sender) {
+        String normalized = normalizeSender(sender);
+        if (normalized.isEmpty() || UNKNOWN_SENDER_PATTERN.matcher(normalized).matches()) {
+            return false;
+        }
+        return LETTER_PATTERN.matcher(normalized).find()
+            && !NUMERIC_SENDER_PATTERN.matcher(normalizeNumericSender(normalized)).matches();
+    }
+
+    private static boolean isNumericSenderId(String sender) {
+        String normalized = normalizeSender(sender);
+        if (normalized.isEmpty() || UNKNOWN_SENDER_PATTERN.matcher(normalized).matches()) {
+            return false;
+        }
+        return NUMERIC_SENDER_PATTERN.matcher(normalizeNumericSender(normalized)).matches();
     }
 
     private static double extractAmount(String body) {
@@ -87,27 +113,38 @@ public final class SmsInsightHelper {
     }
 
     private static String detectStatus(String sender, String body) {
-        String senderLower = sender.toLowerCase(Locale.ROOT);
-        boolean isVerified = VERIFIED_SENDERS.contains(senderLower);
-        boolean isPhoneNumber = PHONE_PATTERN.matcher(sender).matches();
+        String combinedText = sender + " " + body;
+        boolean carrierVerified = isCarrierVerifiedSenderId(sender);
+        boolean numericSender = isNumericSenderId(sender);
         boolean hasUrl = URL_PATTERN.matcher(body).find();
-        boolean mentionsBank = BANK_PATTERN.matcher(body).find();
         boolean hasUrgency = URGENCY_PATTERN.matcher(body).find();
         boolean asksCredentials = CREDENTIAL_PATTERN.matcher(body).find();
+        boolean mentionsMoney = MONEY_CONTEXT_PATTERN.matcher(combinedText).find();
 
-        if (isPhoneNumber && mentionsBank) {
-            return "FRAUD";
-        }
-
-        if (hasUrl && mentionsBank) {
-            return "FRAUD";
-        }
-
-        if (isVerified) {
+        if (carrierVerified) {
+            if (asksCredentials || hasUrl || (hasUrgency && mentionsMoney)) {
+                return "SUSPICIOUS";
+            }
             return "VERIFIED";
         }
 
-        if (hasUrgency || asksCredentials) {
+        if (numericSender) {
+            if (mentionsMoney) {
+                return "FRAUD";
+            }
+
+            if (asksCredentials || hasUrl || hasUrgency) {
+                return "SUSPICIOUS";
+            }
+
+            return "UNKNOWN";
+        }
+
+        if (asksCredentials || hasUrgency) {
+            return "SUSPICIOUS";
+        }
+
+        if (hasUrl && mentionsMoney) {
             return "SUSPICIOUS";
         }
 
@@ -115,25 +152,61 @@ public final class SmsInsightHelper {
     }
 
     private static String detectReason(String sender, String body, String status) {
-        String senderLower = sender.toLowerCase(Locale.ROOT);
+        String combinedText = sender + " " + body;
+        boolean carrierVerified = isCarrierVerifiedSenderId(sender);
+        boolean numericSender = isNumericSenderId(sender);
+        boolean hasUrl = URL_PATTERN.matcher(body).find();
+        boolean hasUrgency = URGENCY_PATTERN.matcher(body).find();
+        boolean asksCredentials = CREDENTIAL_PATTERN.matcher(body).find();
+        boolean mentionsMoney = MONEY_CONTEXT_PATTERN.matcher(combinedText).find();
 
-        if ("VERIFIED".equals(status)) {
-            return "trusted_sender";
+        if (carrierVerified) {
+            if (asksCredentials) {
+                return "carrier_verified_sensitive_request";
+            }
+
+            if (hasUrl) {
+                return "carrier_verified_link";
+            }
+
+            if ("VERIFIED".equals(status)) {
+                return "carrier_verified_sender";
+            }
         }
 
-        if (PHONE_PATTERN.matcher(sender).matches() && BANK_PATTERN.matcher(body).find()) {
-            return "bank_from_phone";
+        if (numericSender && mentionsMoney) {
+            return "phone_sender_not_verified";
         }
 
-        if (URL_PATTERN.matcher(body).find() && BANK_PATTERN.matcher(body).find()) {
+        if (numericSender) {
+            if (asksCredentials) {
+                return "unknown_sender_sensitive_request";
+            }
+
+            if (hasUrl) {
+                return "suspicious_link";
+            }
+
+            if (hasUrgency) {
+                return "urgent_language";
+            }
+
+            return "numeric_sender_unverified";
+        }
+
+        if (asksCredentials) {
+            return "unknown_sender_sensitive_request";
+        }
+
+        if (hasUrl && mentionsMoney) {
             return "suspicious_link";
         }
 
-        if (URGENCY_PATTERN.matcher(body).find() || CREDENTIAL_PATTERN.matcher(body).find()) {
+        if (hasUrgency) {
             return "urgent_language";
         }
 
-        return VERIFIED_SENDERS.contains(senderLower) ? "trusted_sender" : "unrecognized_sender";
+        return "unknown_sender_format";
     }
 
     private static String buildNotificationBody(String sender, double amount, String status, String type) {
@@ -157,13 +230,13 @@ public final class SmsInsightHelper {
     private static String getStatusLabel(String status) {
         switch (status) {
             case "VERIFIED":
-                return "موثوق";
+                return "موثّق من الشبكة";
             case "SUSPICIOUS":
-                return "مريب";
+                return "يحتاج مراجعة";
             case "FRAUD":
-                return "احتيال محتمل";
+                return "خطر احتيال مرتفع";
             default:
-                return "غير معروف";
+                return "ثقة غير محسومة";
         }
     }
 }

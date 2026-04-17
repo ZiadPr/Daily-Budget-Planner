@@ -9,10 +9,10 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.os.Build;
 import android.provider.Telephony;
+import android.telephony.SmsMessage;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import com.getcapacitor.JSObject;
-import android.telephony.SmsMessage;
 
 public class SmsBroadcastReceiver extends BroadcastReceiver {
 
