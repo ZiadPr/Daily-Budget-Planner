@@ -1,29 +1,57 @@
-import React from 'react';
-import { motion } from 'framer-motion';
-import { Users, Plus, CheckCircle, Circle, Trash2, Calendar, ArrowDownRight, ArrowUpRight } from 'lucide-react';
+import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Users, Plus, CheckCircle, Circle, Trash2, Calendar, ArrowDownRight, ArrowUpRight, AlertTriangle } from 'lucide-react';
 
 export default function Gam3eyaTab({ gam3eyat, setGam3eyat, setShowAddGam3eyaModal, t, currentTheme, formatCurrency, currency, lang, addTransactionDirectly }: any) {
+  const [showCompleteConfirm, setShowCompleteConfirm] = useState(false);
+  const [pendingCompletion, setPendingCompletion] = useState<{gam3eya: any, memberId: string} | null>(null);
+
   const toggleMonthPaid = (gam3eyaId: string, memberId: string) => {
-    setGam3eyat(gam3eyat.map((g: any) => {
-      if (g.id === gam3eyaId) {
-        const updatedMembers = g.members.map((m: any) => m.id === memberId ? { ...m, isPaid: !m.isPaid } : m);
-        const allPaid = updatedMembers.every((m: any) => m.isPaid);
-        if (allPaid && !g.isCompleted) {
-          // Auto payout if not already completed
-          handleReceivePayout(g);
-        }
+    const g = gam3eyat.find((gam: any) => gam.id === gam3eyaId);
+    if (!g) return;
+
+    const updatedMembers = g.members.map((m: any) => m.id === memberId ? { ...m, isPaid: !m.isPaid } : m);
+    const allPaid = updatedMembers.every((m: any) => m.isPaid);
+
+    if (allPaid && !g.isCompleted) {
+      setPendingCompletion({ gam3eya: { ...g, members: updatedMembers }, memberId });
+      setShowCompleteConfirm(true);
+      return; // Wait for confirmation
+    }
+
+    setGam3eyat(gam3eyat.map((gam: any) => {
+      if (gam.id === gam3eyaId) {
         return {
-          ...g,
+          ...gam,
           members: updatedMembers,
           isCompleted: allPaid
         };
       }
-      return g;
+      return gam;
     }));
   };
 
+  const confirmCompletion = () => {
+    if (pendingCompletion) {
+      const { gam3eya } = pendingCompletion;
+      handleReceivePayout(gam3eya);
+      setGam3eyat(gam3eyat.map((g: any) => 
+        g.id === gam3eya.id ? { ...gam3eya, isCompleted: true } : g
+      ));
+      setShowCompleteConfirm(false);
+      setPendingCompletion(null);
+    }
+  };
+
+  const cancelCompletion = () => {
+    setShowCompleteConfirm(false);
+    setPendingCompletion(null);
+  };
+
   const handleDeleteGam3eya = (id: string) => {
-    setGam3eyat(gam3eyat.filter((g: any) => g.id !== id));
+    if (window.confirm(lang === 'ar' ? 'هل تريد حذف هذه الجمعية؟' : 'Delete this money pool?')) {
+      setGam3eyat(gam3eyat.filter((g: any) => g.id !== id));
+    }
   };
 
   const handlePayMonthly = (g: any) => {
@@ -41,31 +69,41 @@ export default function Gam3eyaTab({ gam3eyat, setGam3eyat, setShowAddGam3eyaMod
   };
 
   return (
-    <div className="flex flex-col flex-grow space-y-6 pb-24">
-      <div className="flex items-center justify-between mb-4 px-1">
-        <h2 className={`text-2xl font-bold ${currentTheme.text || 'text-slate-50'}`}>{t.gam3eya}</h2>
-        <button onClick={() => setShowAddGam3eyaModal(true)} className={`p-2 rounded-xl bg-sky-500/20 text-sky-400 hover:bg-sky-500/30 transition-colors`}>
+    <div className="flex flex-1 flex-col gap-4">
+      <div className="flex items-end justify-between gap-3 px-1">
+        <div>
+          <p className="text-[0.75rem] text-text-secondary">{lang === 'ar' ? 'الجمعيات والمواعيد القادمة' : 'Track dues and payouts'}</p>
+          <h2 className={`text-[1.25rem] font-bold ${currentTheme.text || 'text-slate-50'}`}>{t.gam3eya}</h2>
+        </div>
+        <button onClick={() => setShowAddGam3eyaModal(true)} className="touch-icon-button rounded-2xl bg-sky-500/20 text-sky-400">
           <Plus className="w-5 h-5" />
         </button>
       </div>
 
       {gam3eyat.length === 0 ? (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-white/[0.02] border border-white/5 rounded-3xl p-8 flex flex-col items-center justify-center text-slate-500 h-48">
-          <Users className="w-10 h-10 mb-3 opacity-30" />
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mobile-card flex h-56 flex-col items-center justify-center gap-4 border border-white/5 bg-white/[0.02] p-8 text-center text-slate-500">
+          <Users className="h-10 w-10 opacity-30" />
+          <button
+            type="button"
+            onClick={() => setShowAddGam3eyaModal(true)}
+            className="min-h-11 rounded-full bg-accent-primary px-5 text-sm font-bold text-text-on-accent"
+          >
+            {t.addGam3eya}
+          </button>
           <p className="text-sm">{lang === 'ar' ? 'لا توجد جمعيات حالياً.' : 'No money pools yet.'}</p>
         </motion.div>
       ) : (
-        <div className="space-y-6">
+        <div className="space-y-4">
           {gam3eyat.map((g: any) => (
-            <motion.div key={g.id} initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className={`bg-white/5 border border-white/10 rounded-[2rem] p-5 relative overflow-hidden ${g.isCompleted ? 'opacity-70' : ''}`}>
+            <motion.div key={g.id} initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className={`mobile-card relative overflow-hidden border border-glass-border bg-glass-bg p-5 ${g.isCompleted ? 'opacity-70' : ''}`}>
               <div className="flex justify-between items-start mb-4">
                 <div>
-                  <h3 className={`text-lg font-bold ${currentTheme.text || 'text-slate-50'}`}>{g.name} {g.isCompleted && (lang === 'ar' ? '(مكتملة)' : '(Completed)')}</h3>
-                  <p className={`text-xs ${currentTheme.text ? 'text-slate-500' : 'text-slate-400'}`}>
+                  <h3 className={`text-lg font-bold text-text-primary`}>{g.name} {g.isCompleted && (lang === 'ar' ? '(مكتملة)' : '(Completed)')}</h3>
+                  <p className={`text-xs text-text-secondary`}>
                     {formatCurrency(g.monthlyAmount, currency, lang, false)} / {lang === 'ar' ? 'شهر' : 'month'}
                   </p>
                 </div>
-                <button onClick={() => handleDeleteGam3eya(g.id)} className="p-2 text-slate-400 hover:text-rose-400 transition-colors">
+                <button onClick={() => handleDeleteGam3eya(g.id)} className="touch-icon-button text-text-secondary">
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
@@ -114,6 +152,36 @@ export default function Gam3eyaTab({ gam3eyat, setGam3eyat, setShowAddGam3eyaMod
           ))}
         </div>
       )}
+
+      {/* Completion Confirmation Modal */}
+      <AnimatePresence>
+        {showCompleteConfirm && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }} className={`bg-gradient-to-br ${currentTheme.card} border border-white/10 rounded-3xl shadow-2xl max-w-sm w-full p-6 text-center`}>
+              <div className="w-16 h-16 mx-auto bg-emerald-500/20 rounded-full flex items-center justify-center mb-4">
+                <CheckCircle className="w-8 h-8 text-emerald-400" />
+              </div>
+              <h3 className={`text-xl font-bold mb-2 ${currentTheme.text || 'text-white'}`}>
+                {lang === 'ar' ? 'إكمال الجمعية' : 'Complete Gam3eya'}
+              </h3>
+              <p className="text-slate-400 text-sm mb-6">
+                {lang === 'ar' 
+                  ? 'لقد تم دفع جميع الأقساط. هل تريد إكمال الجمعية واستلام القبض تلقائياً؟' 
+                  : 'All installments have been paid. Do you want to complete the Gam3eya and receive the payout automatically?'}
+              </p>
+              
+              <div className="flex gap-3">
+                <button onClick={cancelCompletion} className={`flex-1 py-3 rounded-xl font-bold text-slate-300 bg-white/5 hover:bg-white/10 transition-colors`}>
+                  {t.cancel}
+                </button>
+                <button onClick={confirmCompletion} className={`flex-1 py-3 rounded-xl font-bold text-white transition-colors bg-emerald-500 hover:bg-emerald-400`}>
+                  {lang === 'ar' ? 'تأكيد واستلام' : 'Confirm & Receive'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

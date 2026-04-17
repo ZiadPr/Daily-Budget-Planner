@@ -1,0 +1,43 @@
+import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
+import { SplashScreen } from '@capacitor/splash-screen';
+import { StatusBar, Style } from '@capacitor/status-bar';
+
+export async function prepareNativeAppShell(isDarkMode: boolean) {
+  if (!Capacitor.isNativePlatform()) {
+    return;
+  }
+
+  try {
+    await SplashScreen.hide();
+  } catch {}
+
+  try {
+    await StatusBar.setOverlaysWebView({ overlay: false });
+    await StatusBar.setBackgroundColor({ color: isDarkMode ? '#0a0f1e' : '#f8fafc' });
+    await StatusBar.setStyle({ style: isDarkMode ? Style.Light : Style.Dark });
+  } catch {}
+
+  try {
+    await LocalNotifications.createChannel({
+      id: 'sms-insights',
+      name: 'SMS Insights',
+      description: 'Incoming transaction and fraud insights',
+      importance: 5,
+      visibility: 1,
+    });
+  } catch {}
+}
+
+export async function requestNotificationPermissions() {
+  if (!Capacitor.isNativePlatform()) {
+    return { display: 'granted' as const };
+  }
+
+  const current = await LocalNotifications.checkPermissions();
+  if (current.display === 'granted') {
+    return current;
+  }
+
+  return LocalNotifications.requestPermissions();
+}

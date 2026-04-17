@@ -1,20 +1,41 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Money Note
 
-# Run and deploy your AI Studio app
+Money Note is a mobile-first budget planner with:
 
-This contains everything you need to run your app locally.
+- Native-style home, transactions, gam3eya, analytics, and settings screens
+- PIN lock, biometric unlock, privacy mode, fake balance mode, and auto-lock
+- SMS transaction parsing with fraud/trust classification
+- Capacitor Android setup ready inside `android/`
 
-View your app in AI Studio: https://ai.studio/apps/92c137f5-84c2-43f5-98f5-e2afe9cb9c7c
-
-## Run Locally
-
-**Prerequisites:**  Node.js
-
+## Web development
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
+2. Start the app:
    `npm run dev`
+3. Type-check:
+   `npm run lint`
+4. Build production assets:
+   `npm run build`
+
+## Android workflow
+
+1. Sync the latest web build into the native project:
+   `npm run android:sync`
+2. Open the Android project in Android Studio:
+   `npm run android:open`
+
+The Android project includes:
+
+- Capacitor 8 core/runtime
+- `@capacitor/app`
+- `@capacitor/local-notifications`
+- `@capacitor/status-bar`
+- `@capacitor/splash-screen`
+- A native `SmsBroadcastReceiver` and `SmsMonitor` Capacitor plugin for incoming SMS alerts
+
+## Notes
+
+- Automatic SMS receiving works in the Capacitor Android build after granting SMS and notification permissions.
+- Browser mode still supports manual paste/clipboard parsing for testing.
+- Native Android builds need Android Studio, the Android SDK, and a valid `local.properties` SDK path on the machine that runs Gradle.
