@@ -4,6 +4,9 @@ import { SplashScreen } from '@capacitor/splash-screen';
 import { StatusBar, Style } from '@capacitor/status-bar';
 
 export async function prepareNativeAppShell(isDarkMode: boolean) {
+  document.documentElement.dataset.platform = Capacitor.isNativePlatform() ? Capacitor.getPlatform() : 'web';
+  document.documentElement.style.colorScheme = isDarkMode ? 'dark' : 'light';
+
   if (!Capacitor.isNativePlatform()) {
     return;
   }
@@ -21,8 +24,8 @@ export async function prepareNativeAppShell(isDarkMode: boolean) {
   try {
     await LocalNotifications.createChannel({
       id: 'sms-insights',
-      name: 'SMS Insights',
-      description: 'Incoming transaction and fraud insights',
+      name: 'Money Note Alerts',
+      description: 'Transaction confirmations and message analysis',
       importance: 5,
       visibility: 1,
     });

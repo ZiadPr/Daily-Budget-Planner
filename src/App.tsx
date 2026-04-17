@@ -15,7 +15,9 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import Gam3eyaTab from './components/Gam3eyaTab';
 import AppLogo from './components/AppLogo';
-import { analyzeSMS, extractTransactionData, getSmsReasonLabel, getSmsStatusLabel } from './lib/smsParser';
+import { authenticateWithNativeBiometrics, isNativeBiometricAvailable } from './lib/deviceSecurity';
+import { dict } from './lib/i18n';
+import { analyzeSMS, extractTransactionData, getSmsReasonLabel, getSmsStatusLabel, inferSenderFromBody } from './lib/smsParser';
 import { prepareNativeAppShell, requestNotificationPermissions } from './lib/nativeMobile';
 import {
   AutoLockSetting,
@@ -34,11 +36,16 @@ type Language = 'en' | 'ar';
 type Theme = 'frosted' | 'midnight' | 'emerald' | 'sunset' | 'programmer' | 'girly' | 'business' | 'gamer';
 type PinLength = 4 | 6;
 type LockScreenMode = 'pin' | 'question' | 'reset';
+type TransactionOrigin = 'manual' | 'sms' | 'gam3eya';
+type WalletKind = 'cash' | 'bank' | 'card' | 'mobile_wallet';
 
 interface WalletType {
   id: string;
   name: string;
-  icon: string; // ID of the SVG icon
+  icon: string;
+  kind?: WalletKind;
+  provider?: string;
+  accountRef?: string;
 }
 
 interface Transaction {
@@ -48,6 +55,9 @@ interface Transaction {
   type: TransactionType;
   date: string;
   walletId?: string;
+  origin?: TransactionOrigin;
+  sender?: string;
+  details?: string;
   recurring?: 'none' | 'daily' | 'weekly' | 'monthly';
   lastSpawnedDate?: string;
 }
@@ -71,11 +81,24 @@ interface Gam3eya {
 
 const CURRENCIES = [
   { code: 'USD', symbol: '$', label: 'US Dollar' },
-  { code: 'EUR', symbol: 'â‚¬', label: 'Euro' },
-  { code: 'GBP', symbol: 'Â£', label: 'British Pound' },
-  { code: 'EGP', symbol: 'EÂ£', label: 'Egyptian Pound' },
+  { code: 'EUR', symbol: 'EUR', label: 'Euro' },
+  { code: 'GBP', symbol: 'GBP', label: 'British Pound' },
+  { code: 'EGP', symbol: 'EGP', label: 'Egyptian Pound' },
   { code: 'SAR', symbol: 'SR', label: 'Saudi Riyal' },
-  { code: 'AED', symbol: 'Ø¯.Ø¥', label: 'UAE Dirham' },
+  { code: 'AED', symbol: 'AED', label: 'UAE Dirham' },
+];
+
+const WALLET_KIND_OPTIONS: { value: WalletKind; icon: string; label: { en: string; ar: string } }[] = [
+  { value: 'cash', icon: 'cash', label: { en: 'Cash', ar: 'كاش' } },
+  { value: 'bank', icon: 'bank', label: { en: 'Bank account', ar: 'حساب بنكي' } },
+  { value: 'card', icon: 'card', label: { en: 'Card', ar: 'بطاقة / فيزا' } },
+  { value: 'mobile_wallet', icon: 'mobile', label: { en: 'Mobile wallet', ar: 'محفظة إلكترونية' } },
+];
+
+const DEFAULT_WALLETS: WalletType[] = [
+  { id: '1', name: 'Cash / كاش', icon: 'cash', kind: 'cash', provider: 'Cash', accountRef: 'cash' },
+  { id: '2', name: 'Main Bank / البنك الرئيسي', icon: 'bank', kind: 'bank', provider: 'Bank', accountRef: '**** 2451' },
+  { id: '3', name: 'Vodafone Cash', icon: 'mobile', kind: 'mobile_wallet', provider: 'Vodafone', accountRef: '0100' },
 ];
 
 const getTheme = (themeName: Theme, isDark: boolean) => {
@@ -100,198 +123,83 @@ const WALLET_ICONS: Record<string, React.ReactNode> = {
   wallet: <Wallet className="w-5 h-5" />
 };
 
-// --- Translations ---
-const dict = {
-  en: {
-    brand: "Money Note",
-    tagline: "Smarter spending for a clearer future",
-    availableBalance: "Available Balance",
-    dailyAllowance: "Daily Allowance",
-    totalIncome: "Total Income",
-    fixedExpenses: "Fixed Expenses",
-    debtsSavings: "Debts & Savings",
-    analytics: "Analytics",
-    settings: "Settings",
-    income: "Income",
-    expense: "Expense",
-    debt: "Debt",
-    addTransaction: "Add Transaction",
-    name: "Name",
-    amount: "Amount",
-    date: "Date",
-    type: "Type",
-    wallet: "Payment Method",
-    noTransactions: "No transactions recorded yet.",
-    savingsGoal: "Savings Goal",
-    language: "Language",
-    currency: "Currency",
-    theme: "Theme",
-    exportData: "Export Data",
-    importData: "Import Data",
-    resetData: "Reset Data",
-    resetConfirmTitle: "Reset All Data?",
-    resetConfirmMsg: "This will permanently delete all your data. This action cannot be undone.",
-    cancel: "Cancel",
-    confirm: "Yes, Reset",
-    goalProgress: "Savings Goal Progress",
-    goalMet: "Goal met! ðŸŽ‰",
-    moreToGo: "more to go",
-    errorName: "Name cannot be empty",
-    errorAmount: "Amount must be a positive number",
-    errorDate: "Please select a valid date",
-    financialBreakdown: "Financial Analytics",
-    recentTransactions: "Recent Transactions",
-    save: "Save",
-    edit: "Edit",
-    delete: "Delete",
-    allTime: "All Time",
-    thisMonth: "This Month",
-    cashFlow: "Cash Flow",
-    distribution: "Distribution",
-    wallets: "Payment Methods",
-    addWallet: "Add Method",
-    editWallet: "Edit Method",
-    walletName: "Method Name",
-    selectIcon: "Select Icon",
-    dailyLimitWarning: "âš ï¸ Daily limit exceeded! You've spent more than your daily allowance today.",
-    monthlyLimitWarning: "ðŸš¨ Monthly limit exceeded! Your expenses have surpassed your total income.",
-    convertedTo: "Converted to",
-    today: "Today",
-    yesterday: "Yesterday",
-    setupWelcome: "Welcome to Money Planner",
-    setupDesc: "Let's set up your financial profile to get started.",
-    setupName: "What should we call you?",
-    setupCurrency: "Choose your primary currency",
-    setupPin: "Set a 4-digit PIN for security (Optional)",
-    setupPinPlaceholder: "0000",
-    setupStart: "Get Started",
-    enterPin: "Enter your PIN to access",
-    unlock: "Unlock",
-    wrongPin: "Incorrect PIN. Try again.",
-    security: "Security",
-    enablePin: "Enable PIN Protection",
-    changePin: "Change PIN",
-    removePin: "Remove PIN",
-    biometricAuth: "Biometric Authentication",
-    biometricDesc: "Use fingerprint or face ID to unlock",
-    fakeBalance: "Fake Balance Mode",
-    fakeBalanceDesc: "Show a fake high balance to hide your real money",
-    hello: "Hello",
-    onboarding1Title: "Total Privacy",
-    onboarding1Desc: "100% Offline. Your data never leaves your device. No servers, no tracking.",
-    onboarding2Title: "Smart Tracking",
-    onboarding2Desc: "Track expenses, parse SMS receipts, and manage your daily allowance easily.",
-    onboarding3Title: "Money Pools (Gam3eya)",
-    onboarding3Desc: "Organize and track group savings and payouts effortlessly.",
-    next: "Next",
-    startSetup: "Start Setup",
-    smartPaste: "Smart SMS Paste",
-    pasteSmsHere: "Paste your bank SMS here...",
-    parse: "Parse",
-    gam3eya: "Money Pools",
-    home: "Home",
-    addGam3eya: "New Pool",
-    members: "Members",
-    monthlyAmount: "Monthly Amount",
-    payoutMonth: "Payout Month",
-    markPaid: "Mark Paid",
-    currentMonth: "Current Month"
-  },
-  ar: {
-    brand: "Ù…ÙˆÙ†ÙŠ Ù†ÙˆØª",
-    tagline: "ØªØ®Ø·ÙŠØ· Ø°ÙƒÙŠ Ù„Ù…Ø³ØªÙ‚Ø¨Ù„ Ù…Ø§Ù„ÙŠ Ø£ÙˆØ¶Ø­",
-    availableBalance: "Ø§Ù„Ø±ØµÙŠØ¯ Ø§Ù„Ù…ØªØ§Ø­",
-    dailyAllowance: "Ø§Ù„Ù…ØµØ±ÙˆÙ Ø§Ù„ÙŠÙˆÙ…ÙŠ",
-    totalIncome: "Ø¥Ø¬Ù…Ø§Ù„ÙŠ Ø§Ù„Ø¯Ø®Ù„",
-    fixedExpenses: "Ø§Ù„Ù…ØµØ±ÙˆÙØ§Øª Ø§Ù„Ø«Ø§Ø¨ØªØ©",
-    debtsSavings: "Ø§Ù„Ø¯ÙŠÙˆÙ† ÙˆØ§Ù„Ù…Ø¯Ø®Ø±Ø§Øª",
-    analytics: "Ø§Ù„ØªØ­Ù„ÙŠÙ„Ø§Øª",
-    settings: "Ø§Ù„Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª",
-    income: "Ø¯Ø®Ù„",
-    expense: "Ù…ØµØ±ÙˆÙ",
-    debt: "Ø¯ÙŠÙ†/ØªÙˆÙÙŠØ±",
-    addTransaction: "Ø¥Ø¶Ø§ÙØ© Ù…Ø¹Ø§Ù…Ù„Ø©",
-    name: "Ø§Ù„Ø§Ø³Ù…",
-    amount: "Ø§Ù„Ù…Ø¨Ù„Øº",
-    date: "Ø§Ù„ØªØ§Ø±ÙŠØ®",
-    type: "Ø§Ù„Ù†ÙˆØ¹",
-    wallet: "ÙˆØ³ÙŠÙ„Ø© Ø§Ù„Ø¯ÙØ¹",
-    noTransactions: "Ù„Ø§ ØªÙˆØ¬Ø¯ Ù…Ø¹Ø§Ù…Ù„Ø§Øª Ù…Ø³Ø¬Ù„Ø© Ø­ØªÙ‰ Ø§Ù„Ø¢Ù†.",
-    savingsGoal: "Ù‡Ø¯Ù Ø§Ù„Ø¥Ø¯Ø®Ø§Ø±",
-    language: "Ø§Ù„Ù„ØºØ©",
-    currency: "Ø§Ù„Ø¹Ù…Ù„Ø© Ø§Ù„Ø£Ø³Ø§Ø³ÙŠØ©",
-    theme: "Ø§Ù„Ù…Ø¸Ù‡Ø± (Ø§Ù„Ø«ÙŠÙ…)",
-    exportData: "ØªØµØ¯ÙŠØ± Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª",
-    importData: "Ø§Ø³ØªÙŠØ±Ø§Ø¯ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª",
-    resetData: "Ù…Ø³Ø­ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª",
-    resetConfirmTitle: "Ù…Ø³Ø­ Ø¬Ù…ÙŠØ¹ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§ØªØŸ",
-    resetConfirmMsg: "Ø³ÙŠØ¤Ø¯ÙŠ Ù‡Ø°Ø§ Ø¥Ù„Ù‰ Ø­Ø°Ù Ø¬Ù…ÙŠØ¹ Ø¨ÙŠØ§Ù†Ø§ØªÙƒ Ø¨Ø´ÙƒÙ„ Ø¯Ø§Ø¦Ù…. Ù„Ø§ ÙŠÙ…ÙƒÙ† Ø§Ù„ØªØ±Ø§Ø¬Ø¹ Ø¹Ù† Ù‡Ø°Ø§ Ø§Ù„Ø¥Ø¬Ø±Ø§Ø¡.",
-    cancel: "Ø¥Ù„ØºØ§Ø¡",
-    confirm: "Ù†Ø¹Ù…ØŒ Ø§Ù…Ø³Ø­",
-    goalProgress: "Ø§Ù„ØªÙ‚Ø¯Ù… Ù†Ø­Ùˆ Ù‡Ø¯Ù Ø§Ù„Ø¥Ø¯Ø®Ø§Ø±",
-    goalMet: "ØªÙ… ØªØ­Ù‚ÙŠÙ‚ Ø§Ù„Ù‡Ø¯Ù! ðŸŽ‰",
-    moreToGo: "Ù…ØªØ¨Ù‚ÙŠ Ù„Ù„Ù‡Ø¯Ù",
-    errorName: "Ù„Ø§ ÙŠÙ…ÙƒÙ† Ø£Ù† ÙŠÙƒÙˆÙ† Ø§Ù„Ø§Ø³Ù… ÙØ§Ø±ØºØ§Ù‹",
-    errorAmount: "ÙŠØ¬Ø¨ Ø£Ù† ÙŠÙƒÙˆÙ† Ø§Ù„Ù…Ø¨Ù„Øº Ø±Ù‚Ù…Ø§Ù‹ Ù…ÙˆØ¬Ø¨Ø§Ù‹",
-    errorDate: "ÙŠØ±Ø¬Ù‰ ØªØ­Ø¯ÙŠØ¯ ØªØ§Ø±ÙŠØ® ØµØ­ÙŠØ­",
-    financialBreakdown: "Ø§Ù„ØªØ­Ù„ÙŠÙ„Ø§Øª Ø§Ù„Ù…Ø§Ù„ÙŠØ©",
-    recentTransactions: "Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø§Øª Ø§Ù„Ø£Ø®ÙŠØ±Ø©",
-    save: "Ø­ÙØ¸",
-    edit: "ØªØ¹Ø¯ÙŠÙ„",
-    delete: "Ø­Ø°Ù",
-    allTime: "ÙƒÙ„ Ø§Ù„ÙˆÙ‚Øª",
-    thisMonth: "Ù‡Ø°Ø§ Ø§Ù„Ø´Ù‡Ø±",
-    cashFlow: "Ø§Ù„ØªØ¯ÙÙ‚ Ø§Ù„Ù†Ù‚Ø¯ÙŠ",
-    distribution: "ØªÙˆØ²ÙŠØ¹ Ø§Ù„Ù†ÙÙ‚Ø§Øª",
-    wallets: "Ø·Ø±Ù‚ Ø§Ù„Ø¯ÙØ¹",
-    addWallet: "Ø¥Ø¶Ø§ÙØ© Ø·Ø±ÙŠÙ‚Ø©",
-    editWallet: "ØªØ¹Ø¯ÙŠÙ„ Ø·Ø±ÙŠÙ‚Ø©",
-    walletName: "Ø§Ø³Ù… Ø§Ù„Ø·Ø±ÙŠÙ‚Ø©",
-    selectIcon: "Ø§Ø®ØªØ± Ø£ÙŠÙ‚ÙˆÙ†Ø©",
-    dailyLimitWarning: "âš ï¸ ØªØ­Ø°ÙŠØ±: Ù„Ù‚Ø¯ ØªØ¬Ø§ÙˆØ²Øª Ø§Ù„Ø­Ø¯ Ø§Ù„Ù…Ø³Ù…ÙˆØ­ Ø¨Ù‡ Ù„Ù…ØµØ±ÙˆÙÙƒ Ø§Ù„ÙŠÙˆÙ…ÙŠ!",
-    monthlyLimitWarning: "ðŸš¨ ØªØ­Ø°ÙŠØ± Ø®Ø·ÙŠØ±: Ù…ØµØ±ÙˆÙØ§ØªÙƒ Ù‡Ø°Ø§ Ø§Ù„Ø´Ù‡Ø± ØªØ¬Ø§ÙˆØ²Øª Ø¥Ø¬Ù…Ø§Ù„ÙŠ Ø¯Ø®Ù„Ùƒ!",
-    convertedTo: "ÙŠØ¹Ø§Ø¯Ù„ Ø¨Ù€",
-    today: "Ø§Ù„ÙŠÙˆÙ…",
-    yesterday: "Ø£Ù…Ø³",
-    setupWelcome: "Ù…Ø±Ø­Ø¨Ø§Ù‹ Ø¨Ùƒ ÙÙŠ Ù…ÙˆÙ†ÙŠ Ø¨Ù„Ø§Ù†Ø±",
-    setupDesc: "Ø¯Ø¹Ù†Ø§ Ù†Ù‚ÙˆÙ… Ø¨Ø¥Ø¹Ø¯Ø§Ø¯ Ù…Ù„ÙÙƒ Ø§Ù„Ù…Ø§Ù„ÙŠ Ù„Ù„Ø¨Ø¯Ø¡.",
-    setupName: "Ø¨Ù…Ø§Ø°Ø§ Ù†Ù†Ø§Ø¯ÙŠÙƒØŸ",
-    setupCurrency: "Ø§Ø®ØªØ± Ø¹Ù…Ù„ØªÙƒ Ø§Ù„Ø£Ø³Ø§Ø³ÙŠØ©",
-    setupPin: "Ù‚Ù… Ø¨ØªØ¹ÙŠÙŠÙ† Ø±Ù…Ø² PIN Ù…Ù† 4 Ø£Ø±Ù‚Ø§Ù… Ù„Ù„Ø£Ù…Ø§Ù† (Ø§Ø®ØªÙŠØ§Ø±ÙŠ)",
-    setupPinPlaceholder: "0000",
-    setupStart: "Ø§Ø¨Ø¯Ø£ Ø§Ù„Ø¢Ù†",
-    enterPin: "Ø£Ø¯Ø®Ù„ Ø±Ù…Ø² PIN Ù„Ù„Ø¯Ø®ÙˆÙ„",
-    unlock: "ÙØªØ­",
-    wrongPin: "Ø±Ù…Ø² PIN ØºÙŠØ± ØµØ­ÙŠØ­. Ø­Ø§ÙˆÙ„ Ù…Ø±Ø© Ø£Ø®Ø±Ù‰.",
-    security: "Ø§Ù„Ø£Ù…Ø§Ù†",
-    enablePin: "ØªÙØ¹ÙŠÙ„ Ø­Ù…Ø§ÙŠØ© PIN",
-    changePin: "ØªØºÙŠÙŠØ± Ø±Ù…Ø² PIN",
-    removePin: "Ø¥Ø²Ø§Ù„Ø© Ø±Ù…Ø² PIN",
-    biometricAuth: "Ø§Ù„Ù…ØµØ§Ø¯Ù‚Ø© Ø§Ù„Ø¨ÙŠÙˆÙ…ØªØ±ÙŠØ©",
-    biometricDesc: "Ø§Ø³ØªØ®Ø¯Ù… Ø§Ù„Ø¨ØµÙ…Ø© Ø£Ùˆ Ø§Ù„ØªØ¹Ø±Ù Ø¹Ù„Ù‰ Ø§Ù„ÙˆØ¬Ù‡ Ù„ÙØªØ­ Ø§Ù„ØªØ·Ø¨ÙŠÙ‚",
-    fakeBalance: "ÙˆØ¶Ø¹ Ø§Ù„ØªÙ…ÙˆÙŠÙ‡ (Ø±ØµÙŠØ¯ ÙˆÙ‡Ù…ÙŠ)",
-    fakeBalanceDesc: "Ø¥Ø¸Ù‡Ø§Ø± Ø±ØµÙŠØ¯ ÙƒØ¨ÙŠØ± ÙˆÙ‡Ù…ÙŠ Ù„Ø¥Ø®ÙØ§Ø¡ Ø£Ù…ÙˆØ§Ù„Ùƒ Ø§Ù„Ø­Ù‚ÙŠÙ‚ÙŠØ©",
-    hello: "Ø£Ù‡Ù„Ø§Ù‹",
-    onboarding1Title: "Ø®ØµÙˆØµÙŠØ© ØªØ§Ù…Ø©",
-    onboarding1Desc: "ÙŠØ¹Ù…Ù„ 100% Ø¨Ø¯ÙˆÙ† Ø¥Ù†ØªØ±Ù†Øª. Ø¨ÙŠØ§Ù†Ø§ØªÙƒ Ù„Ø§ ØªØºØ§Ø¯Ø± Ù‡Ø§ØªÙÙƒ Ø£Ø¨Ø¯Ø§Ù‹. Ù„Ø§ Ø³ÙŠØ±ÙØ±Ø§ØªØŒ Ù„Ø§ ØªØªØ¨Ø¹.",
-    onboarding2Title: "ØªØªØ¨Ø¹ Ø°ÙƒÙŠ",
-    onboarding2Desc: "ØªØªØ¨Ø¹ Ù…ØµØ±ÙˆÙØ§ØªÙƒØŒ Ø­Ù„Ù„ Ø±Ø³Ø§Ø¦Ù„ Ø§Ù„Ø¨Ù†Ùƒ Ø§Ù„Ù†ØµÙŠØ©ØŒ ÙˆÙ†Ø¸Ù… Ù…ÙŠØ²Ø§Ù†ÙŠØªÙƒ Ø§Ù„ÙŠÙˆÙ…ÙŠØ© Ø¨Ø³Ù‡ÙˆÙ„Ø©.",
-    onboarding3Title: "Ø¥Ø¯Ø§Ø±Ø© Ø§Ù„Ø¬Ù…Ø¹ÙŠØ§Øª",
-    onboarding3Desc: "Ù†Ø¸Ù… ÙˆØªØªØ¨Ø¹ Ø§Ù„Ø¬Ù…Ø¹ÙŠØ§Øª Ø§Ù„Ù…Ø§Ù„ÙŠØ© ÙˆÙ…ÙˆØ§Ø¹ÙŠØ¯ Ø§Ù„Ù‚Ø¨Ø¶ Ù„Ù„Ø£Ø¹Ø¶Ø§Ø¡ Ø¨ÙƒÙ„ Ø³Ù‡ÙˆÙ„Ø©.",
-    next: "Ø§Ù„ØªØ§Ù„ÙŠ",
-    startSetup: "Ø§Ø¨Ø¯Ø£ Ø§Ù„Ø¥Ø¹Ø¯Ø§Ø¯",
-    smartPaste: "Ù„ØµÙ‚ Ø°ÙƒÙŠ Ù„Ù„Ø±Ø³Ø§Ø¦Ù„",
-    pasteSmsHere: "Ø§Ù„ØµÙ‚ Ø±Ø³Ø§Ù„Ø© Ø§Ù„Ø¨Ù†Ùƒ Ù‡Ù†Ø§ Ù„Ø§Ø³ØªØ®Ø±Ø§Ø¬ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª...",
-    parse: "ØªØ­Ù„ÙŠÙ„",
-    gam3eya: "Ø§Ù„Ø¬Ù…Ø¹ÙŠØ§Øª",
-    home: "Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©",
-    addGam3eya: "Ø¬Ù…Ø¹ÙŠØ© Ø¬Ø¯ÙŠØ¯Ø©",
-    members: "Ø§Ù„Ø£Ø¹Ø¶Ø§Ø¡",
-    monthlyAmount: "Ø§Ù„Ù…Ø¨Ù„Øº Ø§Ù„Ø´Ù‡Ø±ÙŠ",
-    payoutMonth: "Ø´Ù‡Ø± Ø§Ù„Ù‚Ø¨Ø¶",
-    markPaid: "ØªÙ… Ø§Ù„Ø¯ÙØ¹",
-    currentMonth: "Ø§Ù„Ø´Ù‡Ø± Ø§Ù„Ø­Ø§Ù„ÙŠ"
+const normalizeDigits = (value = '') => value.replace(/\D/g, '');
+
+const inferWalletKind = (wallet: Partial<WalletType>): WalletKind => {
+  if (wallet.kind) {
+    return wallet.kind;
   }
+
+  if (wallet.icon === 'mobile') {
+    return 'mobile_wallet';
+  }
+
+  if (wallet.icon === 'bank') {
+    return 'bank';
+  }
+
+  if (wallet.icon === 'card') {
+    return 'card';
+  }
+
+  const name = wallet.name?.toLowerCase() ?? '';
+
+  if (/vodafone|orange|etisalat|we|instapay|fawry|محفظة|فودافون|اورنج|اتصالات/.test(name)) {
+    return 'mobile_wallet';
+  }
+
+  if (/visa|master|card|بطاقة|فيزا/.test(name)) {
+    return 'card';
+  }
+
+  if (/bank|بنك|حساب/.test(name)) {
+    return 'bank';
+  }
+
+  return 'cash';
+};
+
+const getDefaultWalletIcon = (kind: WalletKind) => {
+  return WALLET_KIND_OPTIONS.find((option) => option.value === kind)?.icon ?? 'wallet';
+};
+
+const getFallbackWalletName = (kind: WalletKind, lang: Language = 'en') => {
+  const option = WALLET_KIND_OPTIONS.find((entry) => entry.value === kind);
+  return option?.label[lang] ?? (lang === 'ar' ? 'حساب' : 'Account');
+};
+
+const normalizeWallet = (wallet: Partial<WalletType>, index: number): WalletType => {
+  const kind = inferWalletKind(wallet);
+  return {
+    id: wallet.id || `wallet-${index + 1}`,
+    name: wallet.name?.trim() || getFallbackWalletName(kind),
+    icon: wallet.icon || getDefaultWalletIcon(kind),
+    kind,
+    provider: wallet.provider?.trim() || '',
+    accountRef: wallet.accountRef?.trim() || '',
+  };
+};
+
+const normalizeWalletCollection = (wallets: Partial<WalletType>[]) => {
+  if (!wallets.length) {
+    return DEFAULT_WALLETS;
+  }
+
+  return wallets.map((wallet, index) => normalizeWallet(wallet, index));
+};
+
+const getWalletKindLabel = (wallet: Partial<WalletType>, lang: Language) => {
+  const kind = inferWalletKind(wallet);
+  return WALLET_KIND_OPTIONS.find((option) => option.value === kind)?.label[lang] ?? (lang === 'ar' ? 'حساب' : 'Account');
+};
+
+const getWalletSubtitle = (wallet: Partial<WalletType>, lang: Language) => {
+  const details = [wallet.provider?.trim(), wallet.accountRef?.trim()].filter(Boolean);
+  if (details.length) {
+    return details.join(' • ');
+  }
+
+  return getWalletKindLabel(wallet, lang);
 };
 
 // --- Custom Hooks ---
@@ -395,11 +303,7 @@ export default function App() {
 
   const [transactions, setTransactions] = useLocalStorage<Transaction[]>('budget_transactions', []);
   const [gam3eyat, setGam3eyat] = useLocalStorage<Gam3eya[]>('budget_gam3eyat', []);
-  const [wallets, setWallets] = useLocalStorage<WalletType[]>('budget_wallets', [
-    { id: '1', name: 'Cash / ÙƒØ§Ø´', icon: 'cash' },
-    { id: '2', name: 'Bank / Ø¨Ù†Ùƒ', icon: 'bank' },
-    { id: '3', name: 'Vodafone Cash', icon: 'mobile' }
-  ]);
+  const [wallets, setWallets] = useLocalStorage<WalletType[]>('budget_wallets', DEFAULT_WALLETS);
   const [currency, setCurrency] = useLocalStorage<string>('budget_currency', 'USD');
   const [savingsGoal, setSavingsGoal] = useLocalStorage<number>('budget_savings_goal', 0);
   const [lang, setLang] = useLocalStorage<Language>('budget_language', 'en');
@@ -426,12 +330,20 @@ export default function App() {
 
   // Wallet Manager State
   const [editingWalletId, setEditingWalletId] = useState<string | null>(null);
-  const [walletFormData, setWalletFormData] = useState<Partial<WalletType>>({ icon: 'wallet', name: '' });
+  const [walletFormData, setWalletFormData] = useState<Partial<WalletType>>({
+    icon: 'cash',
+    kind: 'cash',
+    name: '',
+    provider: '',
+    accountRef: '',
+  });
   const [showAddGam3eyaModal, setShowAddGam3eyaModal] = useState(false);
   const [showSmsParser, setShowSmsParser] = useState(false);
   const [smsText, setSmsText] = useState('');
   const [smsSenderId, setSmsSenderId] = useState('');
   const [smsAlert, setSmsAlert] = useState<SmsMonitorEvent | null>(null);
+  const [smsReviewWalletId, setSmsReviewWalletId] = useState('');
+  const [selectedWalletFilter, setSelectedWalletFilter] = useState<string>('all');
   const [showAllTransactions, setShowAllTransactions] = useState(false);
   const [isDarkMode, setIsDarkMode] = useLocalStorage<boolean>('budget_dark_mode', true);
   const [setupPinValue, setSetupPinValue] = useState('');
@@ -456,6 +368,13 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    const normalized = normalizeWalletCollection(wallets);
+    if (JSON.stringify(normalized) !== JSON.stringify(wallets)) {
+      setWallets(normalized);
+    }
+  }, [wallets, setWallets]);
   
   const [gam3eyaFormData, setGam3eyaFormData] = useState<Partial<Gam3eya>>({
     name: '',
@@ -473,7 +392,7 @@ export default function App() {
   const isPinTemporarilyLocked = pinLockUntil > lockScreenTick;
   const lockCountdownSeconds = Math.max(0, Math.ceil((pinLockUntil - lockScreenTick) / 1000));
   const securityQuestionLabel = SECURITY_QUESTION_OPTIONS.find((option) => option.id === securityQuestionId)?.label[lang] ?? SECURITY_QUESTION_OPTIONS[0].label[lang];
-  const canUseBiometricsOnLockScreen = biometricSupported && useBiometrics && Boolean(biometricCredentialId);
+  const canUseBiometricsOnLockScreen = biometricSupported && useBiometrics && (isNativeAndroidApp() || Boolean(biometricCredentialId));
 
   useEffect(() => {
     setResetPinLength(pinLength);
@@ -481,6 +400,26 @@ export default function App() {
     setSettingsSecurityQuestionId(securityQuestionId);
     setFakeBalanceInput(fakeBalanceAmount ? String(fakeBalanceAmount) : '');
   }, [pinLength, securityQuestionId, fakeBalanceAmount]);
+
+  useEffect(() => {
+    document.documentElement.lang = lang;
+    document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+  }, [lang]);
+
+  useEffect(() => {
+    if (!wallets.length) {
+      setSmsReviewWalletId('');
+      return;
+    }
+
+    setSmsReviewWalletId((current) => (current && wallets.some((wallet) => wallet.id === current) ? current : wallets[0].id));
+  }, [wallets]);
+
+  useEffect(() => {
+    if (selectedWalletFilter !== 'all' && !wallets.some((wallet) => wallet.id === selectedWalletFilter)) {
+      setSelectedWalletFilter('all');
+    }
+  }, [selectedWalletFilter, wallets]);
 
   useEffect(() => {
     if (pinLockUntil <= Date.now()) {
@@ -586,6 +525,14 @@ export default function App() {
     let cancelled = false;
 
     const detectBiometricSupport = async () => {
+      if (isNativeAndroidApp()) {
+        const isAvailable = await isNativeBiometricAvailable();
+        if (!cancelled) {
+          setBiometricSupported(isAvailable);
+        }
+        return;
+      }
+
       if (
         !window.isSecureContext ||
         !window.PublicKeyCredential ||
@@ -765,6 +712,30 @@ export default function App() {
   };
 
   const handleBiometricAuth = async () => {
+    if (isNativeAndroidApp()) {
+      if (!biometricSupported || !useBiometrics) {
+        return false;
+      }
+
+      const isAuthenticated = await authenticateWithNativeBiometrics({
+        title: t.biometricAuth,
+        subtitle: t.brand,
+        reason: lang === 'ar' ? 'أكد هويتك لفتح التطبيق' : 'Confirm your identity to unlock the app',
+      });
+
+      if (isAuthenticated) {
+        unlockApp();
+        return true;
+      }
+
+      setPinErrorMessage(
+        lang === 'ar'
+          ? 'فشل التحقق بالبصمة. استخدم رمز PIN.'
+          : 'Biometric unlock failed. Use your PIN instead.',
+      );
+      return false;
+    }
+
     if (!biometricSupported || !biometricCredentialId || !useBiometrics || !navigator.credentials) {
       return false;
     }
@@ -792,7 +763,7 @@ export default function App() {
       }
     } catch (error) {
       console.error('Biometric authentication failed', error);
-      setPinErrorMessage(lang === 'ar' ? 'ÙØ´Ù„ Ø§Ù„ØªØ­Ù‚Ù‚ Ø¨Ø§Ù„Ø¨ØµÙ…Ø©. Ø§Ø³ØªØ®Ø¯Ù… Ø±Ù…Ø² PIN.' : 'Biometric unlock failed. Use your PIN instead.');
+      setPinErrorMessage(lang === 'ar' ? 'فشل التحقق بالبصمة. استخدم رمز PIN.' : 'Biometric unlock failed. Use your PIN instead.');
     } finally {
       setBiometricBusy(false);
     }
@@ -802,9 +773,47 @@ export default function App() {
 
   const handleRegisterBiometric = async () => {
     if (!pinEnabled) {
-      setSettingsSecurityError(lang === 'ar' ? 'ÙØ¹Ù‘Ù„ Ø±Ù…Ø² PIN Ø£ÙˆÙ„Ø§Ù‹ Ù‚Ø¨Ù„ Ø§Ù„Ø¨ØµÙ…Ø©.' : 'Enable a PIN first before turning on biometrics.');
+      setSettingsSecurityError(lang === 'ar' ? 'فعّل رمز PIN أولًا قبل تشغيل البصمة.' : 'Enable a PIN first before turning on biometrics.');
       setSettingsSecuritySuccess(null);
       return false;
+    }
+
+    if (isNativeAndroidApp()) {
+      if (!biometricSupported) {
+        setSettingsSecurityError(
+          lang === 'ar'
+            ? 'هذا الجهاز لا يدعم البصمة أو قفل الجهاز غير مُفعّل.'
+            : 'Biometric unlock is unavailable on this device.',
+        );
+        setSettingsSecuritySuccess(null);
+        return false;
+      }
+
+      setBiometricBusy(true);
+      setSettingsSecurityError(null);
+      setSettingsSecuritySuccess(null);
+
+      const isAuthenticated = await authenticateWithNativeBiometrics({
+        title: t.biometricAuth,
+        subtitle: t.brand,
+        reason: lang === 'ar' ? 'أكد هويتك لتفعيل البصمة داخل التطبيق' : 'Confirm your identity to enable biometric unlock',
+      });
+
+      setBiometricBusy(false);
+
+      if (!isAuthenticated) {
+        setSettingsSecurityError(
+          lang === 'ar' ? 'تعذر تفعيل البصمة على هذا الجهاز.' : 'Biometric registration failed on this device.',
+        );
+        return false;
+      }
+
+      setBiometricCredentialId('native-android');
+      setUseBiometrics(true);
+      setSettingsSecuritySuccess(
+        lang === 'ar' ? 'تم تفعيل البصمة بنجاح.' : 'Biometric unlock enabled successfully.',
+      );
+      return true;
     }
 
     if (!biometricSupported || !navigator.credentials) {
@@ -855,14 +864,14 @@ export default function App() {
         const credentialId = toBase64Url(new Uint8Array(created.rawId));
         setBiometricCredentialId(credentialId);
         setUseBiometrics(true);
-        setSettingsSecuritySuccess(lang === 'ar' ? 'ØªÙ… ØªØ³Ø¬ÙŠÙ„ Ø§Ù„Ø¨ØµÙ…Ø© Ø¨Ù†Ø¬Ø§Ø­.' : 'Biometric unlock registered successfully.');
+        setSettingsSecuritySuccess(lang === 'ar' ? 'تم تسجيل البصمة بنجاح.' : 'Biometric unlock registered successfully.');
         return true;
       }
     } catch (error) {
       console.error('Biometric registration failed', error);
       setSettingsSecurityError(
         lang === 'ar'
-          ? 'ØªØ¹Ø°Ù‘Ø± ØªØ³Ø¬ÙŠÙ„ Ø§Ù„Ø¨ØµÙ…Ø© Ø¹Ù„Ù‰ Ù‡Ø°Ø§ Ø§Ù„Ø¬Ù‡Ø§Ø².'
+          ? 'تعذر تسجيل البصمة على هذا الجهاز.'
           : 'Biometric registration failed on this device.'
       );
     } finally {
@@ -875,7 +884,7 @@ export default function App() {
   const handleToggleBiometric = async () => {
     if (useBiometrics) {
       setUseBiometrics(false);
-      setSettingsSecuritySuccess(lang === 'ar' ? 'ØªÙ… Ø¥ÙŠÙ‚Ø§Ù Ø§Ù„Ø¨ØµÙ…Ø©.' : 'Biometric unlock disabled.');
+      setSettingsSecuritySuccess(lang === 'ar' ? 'تم إيقاف البصمة.' : 'Biometric unlock disabled.');
       return;
     }
 
@@ -887,7 +896,7 @@ export default function App() {
     }
 
     setUseBiometrics(true);
-    setSettingsSecuritySuccess(lang === 'ar' ? 'ØªÙ… ØªÙØ¹ÙŠÙ„ Ø§Ù„Ø¨ØµÙ…Ø©.' : 'Biometric unlock enabled.');
+    setSettingsSecuritySuccess(lang === 'ar' ? 'تم تفعيل البصمة.' : 'Biometric unlock enabled.');
   };
 
   const verifyPinCandidate = async (candidate: string) => {
@@ -899,7 +908,7 @@ export default function App() {
     if (isPinTemporarilyLocked) {
       setPinErrorMessage(
         lang === 'ar'
-          ? `ØªÙ… Ù‚ÙÙ„ Ø§Ù„Ù…Ø­Ø§ÙˆÙ„Ø§Øª Ù…Ø¤Ù‚ØªÙ‹Ø§. Ø­Ø§ÙˆÙ„ Ø¨Ø¹Ø¯ ${lockCountdownSeconds} Ø«Ø§Ù†ÙŠØ©.`
+          ? `تم قفل المحاولات مؤقتًا. حاول بعد ${lockCountdownSeconds} ثانية.`
           : `Too many attempts. Try again in ${lockCountdownSeconds} seconds.`
       );
       return false;
@@ -919,7 +928,7 @@ export default function App() {
       setLockScreenMode('question');
       setPinErrorMessage(
         lang === 'ar'
-          ? 'ØªÙ… ØªØ¬Ø§ÙˆØ² Ø¹Ø¯Ø¯ Ø§Ù„Ù…Ø­Ø§ÙˆÙ„Ø§Øª Ø§Ù„Ù…Ø³Ù…ÙˆØ­. Ø£Ø¬Ø¨ Ø¹Ù† Ø³Ø¤Ø§Ù„ Ø§Ù„Ø£Ù…Ø§Ù† Ù„Ø¥Ø¹Ø§Ø¯Ø© ØªØ¹ÙŠÙŠÙ† Ø§Ù„Ø±Ù…Ø².'
+          ? 'تم تجاوز عدد المحاولات المسموح. أجب عن سؤال الأمان لإعادة تعيين الرمز.'
           : 'Too many failed attempts. Answer your security question to reset the PIN.'
       );
       return false;
@@ -929,7 +938,7 @@ export default function App() {
       setPinLockUntil(Date.now() + 60_000);
       setPinErrorMessage(
         lang === 'ar'
-          ? 'ØªÙ… Ù‚ÙÙ„ Ø§Ù„Ù…Ø­Ø§ÙˆÙ„Ø§Øª Ù„Ù…Ø¯Ø© 60 Ø«Ø§Ù†ÙŠØ©.'
+          ? 'تم قفل المحاولات لمدة 60 ثانية.'
           : 'The PIN is locked for 60 seconds.'
       );
       return false;
@@ -1026,18 +1035,18 @@ export default function App() {
     const trimmedSecurityAnswer = settingsSecurityAnswer.trim();
 
     if (!/^-?\d*(\.\d+)?$/.test(fakeBalanceInput.trim()) && fakeBalanceInput.trim()) {
-      setSettingsSecurityError(lang === 'ar' ? 'Ø£Ø¯Ø®Ù„ Ø±ØµÙŠØ¯Ù‹Ø§ ÙˆÙ‡Ù…ÙŠÙ‹Ø§ ØµØ§Ù„Ø­Ù‹Ø§.' : 'Enter a valid fake balance amount.');
+      setSettingsSecurityError(lang === 'ar' ? 'أدخل رصيدًا وهميًا صالحًا.' : 'Enter a valid fake balance amount.');
       return;
     }
 
     const parsedFakeBalance = fakeBalanceInput.trim() ? Number(fakeBalanceInput) : 0;
     if (Number.isNaN(parsedFakeBalance) || parsedFakeBalance < 0) {
-      setSettingsSecurityError(lang === 'ar' ? 'Ù‚ÙŠÙ…Ø© Ø§Ù„Ø±ØµÙŠØ¯ Ø§Ù„ÙˆÙ‡Ù…ÙŠ ÙŠØ¬Ø¨ Ø£Ù† ØªÙƒÙˆÙ† ØµÙØ±Ù‹Ø§ Ø£Ùˆ Ø£ÙƒØ«Ø±.' : 'Fake balance must be zero or greater.');
+      setSettingsSecurityError(lang === 'ar' ? 'قيمة الرصيد الوهمي يجب أن تكون صفرًا أو أكثر.' : 'Fake balance must be zero or greater.');
       return;
     }
 
     if (fakeBalanceMode && parsedFakeBalance <= 0) {
-      setSettingsSecurityError(lang === 'ar' ? 'Ø£Ø¯Ø®Ù„ Ø±ØµÙŠØ¯Ù‹Ø§ ÙˆÙ‡Ù…ÙŠÙ‹Ø§ Ø£ÙƒØ¨Ø± Ù…Ù† ØµÙØ± Ù„ØªÙØ¹ÙŠÙ„ Ø§Ù„ÙˆØ¶Ø¹.' : 'Enter a fake balance greater than zero to enable this mode.');
+      setSettingsSecurityError(lang === 'ar' ? 'أدخل رصيدًا وهميًا أكبر من صفر لتفعيل هذا الوضع.' : 'Enter a fake balance greater than zero to enable this mode.');
       return;
     }
 
@@ -1048,7 +1057,7 @@ export default function App() {
       setSettingsPinDraft('');
       setSettingsPinConfirmDraft('');
       setSettingsSecurityAnswer('');
-      setSettingsSecuritySuccess(lang === 'ar' ? 'ØªÙ… Ø­ÙØ¸ Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Ø§Ù„Ø®ØµÙˆØµÙŠØ©.' : 'Privacy settings saved.');
+      setSettingsSecuritySuccess(lang === 'ar' ? 'تم حفظ إعدادات الخصوصية.' : 'Privacy settings saved.');
       return;
     }
 
@@ -1059,14 +1068,14 @@ export default function App() {
     if (!/^\d+$/.test(trimmedPin) || trimmedPin.length !== settingsPinLengthDraft) {
       setSettingsSecurityError(
         lang === 'ar'
-          ? `Ø£Ø¯Ø®Ù„ Ø±Ù…Ø² PIN Ù…ÙƒÙˆÙ‘Ù†Ù‹Ø§ Ù…Ù† ${settingsPinLengthDraft} Ø£Ø±Ù‚Ø§Ù….`
+          ? `أدخل رمز PIN مكوّنًا من ${settingsPinLengthDraft} أرقام.`
           : `Enter a ${settingsPinLengthDraft}-digit PIN.`
       );
       return;
     }
 
     if (trimmedPin !== trimmedConfirm) {
-      setSettingsSecurityError(lang === 'ar' ? 'Ø±Ù…Ø²Ø§ PIN ØºÙŠØ± Ù…ØªØ·Ø§Ø¨Ù‚ÙŠÙ†.' : 'PIN values do not match.');
+      setSettingsSecurityError(lang === 'ar' ? 'رمزا PIN غير متطابقين.' : 'PIN values do not match.');
       return;
     }
 
@@ -1074,7 +1083,7 @@ export default function App() {
     if (!answerToSave && !securityAnswerHash) {
       setSettingsSecurityError(
         lang === 'ar'
-          ? 'Ø£Ø¯Ø®Ù„ Ø¥Ø¬Ø§Ø¨Ø© Ø³Ø¤Ø§Ù„ Ø§Ù„Ø£Ù…Ø§Ù† Ù„Ù„Ø§Ø­ØªÙØ§Ø¸ Ø¨Ø®ÙŠØ§Ø± Ø§Ø³ØªØ¹Ø§Ø¯Ø© PIN.'
+          ? 'أدخل إجابة سؤال الأمان للاحتفاظ بخيار استعادة PIN.'
           : 'Add a security answer to keep PIN recovery available.'
       );
       return;
@@ -1095,13 +1104,13 @@ export default function App() {
     setSettingsPinDraft('');
     setSettingsPinConfirmDraft('');
     setSettingsSecurityAnswer('');
-    setSettingsSecuritySuccess(lang === 'ar' ? 'ØªÙ… Ø­ÙØ¸ Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Ø§Ù„Ø£Ù…Ø§Ù†.' : 'Security settings saved.');
+    setSettingsSecuritySuccess(lang === 'ar' ? 'تم حفظ إعدادات الأمان.' : 'Security settings saved.');
   };
 
   const handleDisablePin = () => {
     const confirmed = window.confirm(
       lang === 'ar'
-        ? 'Ù‡Ù„ ØªØ±ÙŠØ¯ ØªØ¹Ø·ÙŠÙ„ Ù‚ÙÙ„ PIN ÙˆØ§Ù„Ø¨ØµÙ…Ø©ØŸ'
+        ? 'هل تريد تعطيل قفل PIN والبصمة؟'
         : 'Disable PIN lock and biometric unlock?'
     );
 
@@ -1120,7 +1129,7 @@ export default function App() {
     setSettingsPinConfirmDraft('');
     setSettingsSecurityAnswer('');
     setSettingsSecurityError(null);
-    setSettingsSecuritySuccess(lang === 'ar' ? 'ØªÙ… ØªØ¹Ø·ÙŠÙ„ PIN ÙˆØ§Ù„Ø¨ØµÙ…Ø©.' : 'PIN and biometric unlock disabled.');
+    setSettingsSecuritySuccess(lang === 'ar' ? 'تم تعطيل PIN والبصمة.' : 'PIN and biometric unlock disabled.');
     setIsLocked(false);
   };
 
@@ -1130,7 +1139,7 @@ export default function App() {
     if (!securityAnswerHash) {
       setSecurityResetError(
         lang === 'ar'
-          ? 'Ù„Ø§ ÙŠÙˆØ¬Ø¯ Ø³Ø¤Ø§Ù„ Ø£Ù…Ø§Ù† Ù…Ø­ÙÙˆØ¸ Ù„Ù‡Ø°Ø§ Ø§Ù„ØªØ·Ø¨ÙŠÙ‚.'
+          ? 'لا يوجد سؤال أمان محفوظ لهذا التطبيق.'
           : 'No backup security question is configured for this app.'
       );
       return;
@@ -1140,7 +1149,7 @@ export default function App() {
     if (hashedAnswer !== securityAnswerHash) {
       setSecurityResetError(
         lang === 'ar'
-          ? 'Ø¥Ø¬Ø§Ø¨Ø© Ø³Ø¤Ø§Ù„ Ø§Ù„Ø£Ù…Ø§Ù† ØºÙŠØ± ØµØ­ÙŠØ­Ø©.'
+          ? 'إجابة سؤال الأمان غير صحيحة.'
           : 'Incorrect answer to the security question.'
       );
       return;
@@ -1160,14 +1169,14 @@ export default function App() {
     if (!/^\d+$/.test(resetPinValue) || resetPinValue.length !== resetPinLength) {
       setSecurityResetError(
         lang === 'ar'
-          ? `Ø£Ø¯Ø®Ù„ Ø±Ù…Ø² PIN Ù…ÙƒÙˆÙ‘Ù†Ù‹Ø§ Ù…Ù† ${resetPinLength} Ø£Ø±Ù‚Ø§Ù….`
+          ? `أدخل رمز PIN مكوّنًا من ${resetPinLength} أرقام.`
           : `Enter a ${resetPinLength}-digit PIN.`
       );
       return;
     }
 
     if (resetPinValue !== resetPinConfirm) {
-      setSecurityResetError(lang === 'ar' ? 'Ø±Ù…Ø²Ø§ PIN ØºÙŠØ± Ù…ØªØ·Ø§Ø¨Ù‚ÙŠÙ†.' : 'PIN values do not match.');
+      setSecurityResetError(lang === 'ar' ? 'رمزا PIN غير متطابقين.' : 'PIN values do not match.');
       return;
     }
 
@@ -1192,7 +1201,7 @@ export default function App() {
       if (!/^\d+$/.test(setupPinValue) || setupPinValue.length !== setupPinLength) {
         setSetupError(
           lang === 'ar'
-            ? `Ø£Ø¯Ø®Ù„ Ø±Ù…Ø² PIN Ù…ÙƒÙˆÙ‘Ù†Ù‹Ø§ Ù…Ù† ${setupPinLength} Ø£Ø±Ù‚Ø§Ù….`
+            ? `أدخل رمز PIN مكوّنًا من ${setupPinLength} أرقام.`
             : `Enter a ${setupPinLength}-digit PIN.`
         );
         return;
@@ -1201,7 +1210,7 @@ export default function App() {
       if (!setupSecurityAnswer.trim()) {
         setSetupError(
           lang === 'ar'
-            ? 'Ø£Ø¯Ø®Ù„ Ø¥Ø¬Ø§Ø¨Ø© Ø³Ø¤Ø§Ù„ Ø§Ù„Ø£Ù…Ø§Ù† Ù„Ø§Ø³ØªØ®Ø¯Ø§Ù… Ø®ÙŠØ§Ø± Ù†Ø³ÙŠØª Ø§Ù„Ø±Ù…Ø².'
+            ? 'أدخل إجابة سؤال الأمان لاستخدام خيار نسيت الرمز.'
             : 'Add a backup security answer to enable PIN recovery.'
         );
         return;
@@ -1242,9 +1251,9 @@ export default function App() {
       for (let i = 1; i <= (gam3eyaFormData.totalMonths || 5); i++) {
         members.push({
           id: generateId() + i,
-          name: `Member ${i}`,
+          name: lang === 'ar' ? `الشهر ${i}` : `Month ${i}`,
+          isPaid: false,
           payoutMonth: i,
-          hasPaidCurrent: false
         });
       }
     }
@@ -1263,22 +1272,6 @@ export default function App() {
     setShowAddGam3eyaModal(false);
     setGam3eyaFormData({ name: '', monthlyAmount: 0, totalMonths: 5, currentMonth: 1, startDate: new Date().toISOString().split('T')[0], members: [] });
   };
-
-  const toggleMemberPaid = (gam3eyaId: string, memberId: string) => {
-    setGam3eyat(gam3eyat.map(g => {
-      if (g.id === gam3eyaId) {
-        return {
-          ...g,
-          members: g.members.map(m => m.id === memberId ? { ...m, hasPaidCurrent: !m.hasPaidCurrent } : m)
-        };
-      }
-      return g;
-    }));
-  };
-
-  const deleteGam3eya = (id: string) => {
-    setGam3eyat(gam3eyat.filter(g => g.id !== id));
-  };
   const handlePasteFromClipboard = async () => {
     try {
       const text = await navigator.clipboard.readText();
@@ -1291,47 +1284,93 @@ export default function App() {
     }
   };
 
-  const handleParseSms = () => {
-    if (!smsText.trim()) return;
+  const buildSmsDraft = () => {
+    if (!smsText.trim()) {
+      return null;
+    }
 
     let sender = smsSenderId.trim();
 
     if (!sender) {
-      // Simulate looking for sender in pasted text since WebView is restricted
-      const senderMatch = smsText.match(/(CIB|NBE|BanqueMisr|QNB|ALEXBANK|HSBC|Fawry|InstaPay|VFCash|OrangeMoney|Vodafone|Orange|Etisalat|WE)/i);
-      if(senderMatch) {
-          sender = senderMatch[0];
-      } else {
-          const firstWordMatch = smsText.match(/^[^\s]+/);
-          sender = firstWordMatch ? firstWordMatch[0] : 'Unknown';
-      }
+      sender = inferSenderFromBody(smsText);
     }
 
     const verificationResult = analyzeSMS(sender, smsText);
     const { amount, type } = extractTransactionData(smsText);
-    
-    let finalName = type === 'income' ? (lang === 'ar' ? 'Ø¥ÙŠØ¯Ø§Ø¹ Ø¨Ù†ÙƒÙŠ' : 'Bank Deposit') : (lang === 'ar' ? 'Ù…Ø¯ÙÙˆØ¹Ø§Øª Ø¨Ù†ÙƒÙŠØ©' : 'Bank Payment');
-    
-    if (verificationResult.status === 'VERIFIED') {
-       finalName += ` (${sender})`;
+    const guessedWalletId = smsReviewWalletId || guessWalletIdFromMessage(sender, smsText) || wallets[0]?.id;
+
+    let finalName = type === 'income' ? (lang === 'ar' ? 'إيداع بنكي' : 'Bank Deposit') : (lang === 'ar' ? 'مدفوعات بنكية' : 'Bank Payment');
+
+    if (verificationResult.status === 'VERIFIED' && sender !== 'Unknown') {
+      finalName += ` (${sender})`;
+    }
+
+    return {
+      sender,
+      amount,
+      type: type as TransactionType,
+      verificationResult,
+      walletId: guessedWalletId,
+      finalName,
+    };
+  };
+
+  const handleParseSms = () => {
+    const smsDraft = buildSmsDraft();
+    if (!smsDraft) {
+      return;
     }
 
     setFormData({
       ...formData,
-      amount: amount || undefined,
-      type,
-      name: finalName,
-      date: new Date().toISOString().split('T')[0]
+      amount: smsDraft.amount || undefined,
+      type: smsDraft.type,
+      name: smsDraft.finalName,
+      date: new Date().toISOString().split('T')[0],
+      walletId: smsDraft.walletId,
+      origin: 'sms',
+      sender: smsDraft.sender,
+      details: smsText,
     });
-    
-    if (verificationResult.status === 'FRAUD' || verificationResult.status === 'SUSPICIOUS') {
-      alert(`âš ï¸ Fraud Warning: ${verificationResult.reason}`);
+
+    if (smsDraft.verificationResult.status === 'FRAUD' || smsDraft.verificationResult.status === 'SUSPICIOUS') {
+      alert(`${lang === 'ar' ? 'تحذير أمني' : 'Security warning'}: ${getSmsReasonLabel(smsDraft.verificationResult.reason, lang)}`);
     }
 
     setShowSmsParser(false);
     setShowAddModal(true);
     setSmsText('');
     setSmsSenderId('');
+  };
+
+  const handleSaveSmsTransaction = () => {
+    const smsDraft = buildSmsDraft();
+    if (!smsDraft) {
+      return;
+    }
+
+    if (!smsDraft.amount || smsDraft.amount <= 0) {
+      alert(t.messageNeedsAmount);
+      return;
+    }
+
+    appendTransaction({
+      name: smsDraft.finalName,
+      amount: smsDraft.amount,
+      type: smsDraft.type,
+      date: new Date().toISOString().split('T')[0],
+      walletId: smsDraft.walletId,
+      origin: 'sms',
+      sender: smsDraft.sender,
+      details: smsText,
+      recurring: 'none',
+    });
+
+    setShowSmsParser(false);
+    setSmsAlert(null);
+    setSmsText('');
+    setSmsSenderId('');
+    alert(t.messageSaved);
   };
 
   // Calculations
@@ -1363,6 +1402,9 @@ export default function App() {
   const isDailyLimitExceeded = todayExpenses > dailyAllowance && dailyAllowance > 0;
   const isMonthlyLimitExceeded = monthExpenses > totalIncome && totalIncome > 0;
 
+  const sortTransactionsByDate = (items: Transaction[]) =>
+    [...items].sort((first, second) => new Date(second.date).getTime() - new Date(first.date).getTime());
+
   // Group Transactions by Date
   const groupedTransactions = useMemo(() => {
     const groups: Record<string, Transaction[]> = {};
@@ -1373,16 +1415,77 @@ export default function App() {
     return Object.entries(groups).sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime());
   }, [transactions]);
 
-  const addTransactionDirectly = (name: string, amount: number, type: TransactionType) => {
+  const visibleTransactions = useMemo(() => {
+    if (selectedWalletFilter === 'all') {
+      return transactions;
+    }
+
+    return transactions.filter((transaction) => transaction.walletId === selectedWalletFilter);
+  }, [selectedWalletFilter, transactions]);
+
+  const groupedVisibleTransactions = useMemo(() => {
+    const groups: Record<string, Transaction[]> = {};
+    visibleTransactions.forEach((transaction) => {
+      if (!groups[transaction.date]) {
+        groups[transaction.date] = [];
+      }
+      groups[transaction.date].push(transaction);
+    });
+    return Object.entries(groups).sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime());
+  }, [visibleTransactions]);
+
+  const guessWalletIdFromMessage = (sender: string, body: string) => {
+    const messageText = `${sender} ${body}`.toLowerCase();
+    const messageDigits = normalizeDigits(`${sender} ${body}`);
+
+    const exactReferenceMatch = wallets.find((wallet) => {
+      const referenceDigits = normalizeDigits(wallet.accountRef);
+      return referenceDigits.length >= 4 && messageDigits.includes(referenceDigits);
+    });
+
+    if (exactReferenceMatch) {
+      return exactReferenceMatch.id;
+    }
+
+    const providerMatch = wallets.find((wallet) => {
+      const terms = [wallet.name, wallet.provider, wallet.accountRef]
+        .flatMap((value) => (value || '').split(/[\/|\-]/))
+        .map((value) => value.trim().toLowerCase())
+        .filter((value) => value.length >= 3);
+
+      return terms.some((term) => messageText.includes(term));
+    });
+
+    return providerMatch?.id;
+  };
+
+  const appendTransaction = (transaction: Omit<Transaction, 'id'>) => {
     const newTransaction: Transaction = {
       id: generateId(),
+      ...transaction,
+    };
+
+    setTransactions((currentTransactions) => sortTransactionsByDate([newTransaction, ...currentTransactions]));
+    return newTransaction;
+  };
+
+  const addTransactionDirectly = (
+    name: string,
+    amount: number,
+    type: TransactionType,
+    options?: Partial<Pick<Transaction, 'walletId' | 'origin' | 'sender' | 'details'>>,
+  ) => {
+    const newTransaction = {
       name,
       amount,
       type,
       date: new Date().toISOString().split('T')[0],
-      walletId: wallets[0]?.id
+      walletId: options?.walletId || wallets[0]?.id,
+      origin: options?.origin || 'manual',
+      sender: options?.sender,
+      details: options?.details,
     };
-    setTransactions([newTransaction, ...transactions]);
+    appendTransaction(newTransaction);
   };
 
   // Handlers
@@ -1391,6 +1494,9 @@ export default function App() {
     if (!formData.name?.trim()) return setFormError(t.errorName);
     if (!formData.amount || isNaN(Number(formData.amount)) || Number(formData.amount) <= 0) return setFormError(t.errorAmount);
     if (!formData.date) return setFormError(t.errorDate);
+    if (!formData.walletId || !wallets.some((wallet) => wallet.id === formData.walletId)) {
+      return setFormError(lang === 'ar' ? 'اختر حساباً صالحاً قبل الحفظ.' : 'Select a valid account before saving.');
+    }
 
     const newTransaction: Transaction = {
       id: editingId || generateId(),
@@ -1399,19 +1505,34 @@ export default function App() {
       type: formData.type as TransactionType,
       date: formData.date,
       walletId: formData.walletId,
+      origin: (formData.origin as TransactionOrigin) || 'manual',
+      sender: formData.sender,
+      details: formData.details,
       recurring: formData.recurring || 'none'
     };
 
     if (editingId) {
       setTransactions(transactions.map(t => t.id === editingId ? newTransaction : t));
     } else {
-      setTransactions([newTransaction, ...transactions].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+      setTransactions(sortTransactionsByDate([newTransaction, ...transactions]));
     }
     closeAddModal();
   };
 
-  const openAddModal = (type: TransactionType = 'expense') => {
-    setFormData({ type, date: new Date().toISOString().split('T')[0], name: '', amount: undefined, walletId: wallets[0]?.id, recurring: 'none' });
+  const openAddModal = (type: TransactionType = 'expense', walletId?: string) => {
+    const preferredWalletId =
+      walletId ||
+      (selectedWalletFilter !== 'all' ? selectedWalletFilter : '') ||
+      wallets[0]?.id;
+
+    setFormData({
+      type,
+      date: new Date().toISOString().split('T')[0],
+      name: '',
+      amount: undefined,
+      walletId: preferredWalletId,
+      recurring: 'none',
+    });
     setEditingId(null);
     setFormError(null);
     setShowAddModal(true);
@@ -1445,7 +1566,7 @@ export default function App() {
   };
 
   const handleDelete = (id: string) => {
-    if (!window.confirm(lang === 'ar' ? 'Ù‡Ù„ ØªØ±ÙŠØ¯ Ø­Ø°Ù Ù‡Ø°Ù‡ Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø©ØŸ' : 'Delete this transaction?')) {
+    if (!window.confirm(lang === 'ar' ? 'هل تريد حذف هذه المعاملة؟' : 'Delete this transaction?')) {
       return false;
     }
 
@@ -1456,11 +1577,7 @@ export default function App() {
   const handleReset = () => {
     setTransactions([]);
     setGam3eyat([]);
-    setWallets([
-      { id: '1', name: 'Cash / ÙƒØ§Ø´', icon: 'cash' },
-      { id: '2', name: 'Bank / Ø¨Ù†Ùƒ', icon: 'bank' },
-      { id: '3', name: 'Vodafone Cash', icon: 'mobile' }
-    ]);
+    setWallets(DEFAULT_WALLETS);
     setSavingsGoal(0);
     setShowResetConfirm(false);
     setShowSettingsModal(false);
@@ -1486,12 +1603,12 @@ export default function App() {
     reader.onload = (event) => {
       try {
         const data = JSON.parse(event.target?.result as string);
-        if (data.transactions) setTransactions(data.transactions);
-        if (data.wallets) setWallets(data.wallets);
-        if (data.currency) setCurrency(data.currency);
-        if (data.savingsGoal) setSavingsGoal(data.savingsGoal);
-        if (data.lang) setLang(data.lang);
-        if (data.theme) setTheme(data.theme);
+        if (Array.isArray(data.transactions)) setTransactions(data.transactions);
+        if (Array.isArray(data.wallets)) setWallets(normalizeWalletCollection(data.wallets));
+        if (typeof data.currency === 'string') setCurrency(data.currency);
+        if (typeof data.savingsGoal === 'number') setSavingsGoal(data.savingsGoal);
+        if (data.lang === 'en' || data.lang === 'ar') setLang(data.lang);
+        if (typeof data.theme === 'string') setTheme(data.theme);
         setShowSettingsModal(false);
       } catch (error) {
         alert('Invalid backup file');
@@ -1504,11 +1621,15 @@ export default function App() {
   const handleSaveWallet = (e: React.FormEvent) => {
     e.preventDefault();
     if (!walletFormData.name?.trim()) return;
+    const kind = inferWalletKind(walletFormData);
     
     const newWallet: WalletType = {
       id: editingWalletId || generateId(),
       name: walletFormData.name.trim(),
-      icon: walletFormData.icon || 'wallet'
+      icon: walletFormData.icon || getDefaultWalletIcon(kind),
+      kind,
+      provider: walletFormData.provider?.trim() || '',
+      accountRef: walletFormData.accountRef?.trim() || '',
     };
 
     if (editingWalletId) {
@@ -1517,11 +1638,16 @@ export default function App() {
       setWallets([...wallets, newWallet]);
     }
     setEditingWalletId(null);
-    setWalletFormData({ icon: 'wallet', name: '' });
+    setWalletFormData({ icon: 'cash', kind: 'cash', name: '', provider: '', accountRef: '' });
   };
 
   const handleDeleteWallet = (id: string) => {
-    if (!window.confirm(lang === 'ar' ? 'Ù‡Ù„ ØªØ±ÙŠØ¯ Ø­Ø°Ù ÙˆØ³ÙŠÙ„Ø© Ø§Ù„Ø¯ÙØ¹ Ù‡Ø°Ù‡ØŸ' : 'Delete this payment method?')) {
+    if (wallets.length <= 1) {
+      alert(lang === 'ar' ? 'يجب أن يبقى حساب واحد على الأقل داخل التطبيق.' : 'At least one account must remain in the app.');
+      return;
+    }
+
+    if (!window.confirm(lang === 'ar' ? 'هل تريد حذف هذا الحساب؟' : 'Delete this account?')) {
       return;
     }
 
@@ -1532,7 +1658,29 @@ export default function App() {
 
 
   const currentCurrencySymbol = CURRENCIES.find(c => c.code === currency)?.symbol || '$';
+  const walletSnapshots = wallets.map((wallet) => {
+    const relatedTransactions = transactions.filter((transaction) => transaction.walletId === wallet.id);
+    const income = relatedTransactions
+      .filter((transaction) => transaction.type === 'income')
+      .reduce((sum, transaction) => sum + transaction.amount, 0);
+    const outflow = relatedTransactions
+      .filter((transaction) => transaction.type === 'expense' || transaction.type === 'debt')
+      .reduce((sum, transaction) => sum + transaction.amount, 0);
+
+    return {
+      ...wallet,
+      income,
+      outflow,
+      balance: income - outflow,
+      count: relatedTransactions.length,
+    };
+  });
+  const selectedFormWallet = wallets.find((wallet) => wallet.id === formData.walletId);
   const analyticsHasData = totalIncome > 0 || totalExpenses > 0 || totalDebts > 0;
+  const walletTransactionStats = wallets.map((wallet) => ({
+    ...wallet,
+    count: transactions.filter((transaction) => transaction.walletId === wallet.id).length,
+  }));
   const cashFlowChartData = [
     { name: t.income, amount: totalIncome, fill: '#34d399' },
     { name: t.expense, amount: totalExpenses, fill: '#fb7185' },
@@ -1542,12 +1690,13 @@ export default function App() {
     { name: t.expense, value: totalExpenses, color: '#fb7185' },
     { name: t.debt, value: totalDebts, color: '#a78bfa' },
   ].filter((item) => item.value > 0);
+  const smsDraftPreview = buildSmsDraft();
 
   // Render Helpers
   const SensitiveText = ({
     children,
     className = "",
-    mask = 'â€¢â€¢â€¢â€¢',
+    mask = '****',
   }: {
     children: React.ReactNode,
     className?: string,
@@ -1634,6 +1783,7 @@ export default function App() {
   const handleIncomingSmsEvent = (event: SmsMonitorEvent) => {
     setSmsText(event.body);
     setSmsSenderId(event.sender);
+    setSmsReviewWalletId(guessWalletIdFromMessage(event.sender, event.body) || wallets[0]?.id || '');
     setSmsAlert(event);
   };
 
@@ -1882,7 +2032,7 @@ export default function App() {
                 <div>
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <label className="text-xs font-medium text-slate-400 uppercase tracking-wider block">
-                      {lang === 'ar' ? 'PIN Ø§Ø®ØªÙŠØ§Ø±ÙŠ' : 'Optional PIN'}
+                      {lang === 'ar' ? 'PIN اختياري' : 'Optional PIN'}
                     </label>
                     <div className="flex rounded-full border border-white/10 bg-white/5 p-1 text-xs font-semibold">
                       {[4, 6].map((lengthOption) => (
@@ -1911,7 +2061,7 @@ export default function App() {
                   </div>
                   <p className="mt-2 text-xs text-text-secondary">
                     {lang === 'ar'
-                      ? 'Ø¥Ø°Ø§ Ø£Ø¶ÙØª PIN Ø³ØªØ­ØªØ§Ø¬ Ø£ÙŠØ¶Ù‹Ø§ Ø¥Ù„Ù‰ Ø³Ø¤Ø§Ù„ Ø£Ù…Ø§Ù† Ù„Ø§Ø³ØªØ¹Ø§Ø¯Ø© Ø§Ù„ÙˆØµÙˆÙ„.'
+                      ? 'إذا أضفت PIN فستحتاج أيضًا إلى سؤال أمان لاستعادة الوصول.'
                       : 'If you add a PIN, a backup security question is required for recovery.'}
                   </p>
                 </div>
@@ -1920,7 +2070,7 @@ export default function App() {
                   <>
                     <div>
                       <label className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2 block">
-                        {lang === 'ar' ? 'Ø³Ø¤Ø§Ù„ Ø§Ù„Ø£Ù…Ø§Ù†' : 'Security question'}
+                        {lang === 'ar' ? 'سؤال الأمان' : 'Security question'}
                       </label>
                       <select
                         value={setupSecurityQuestionId}
@@ -1937,14 +2087,14 @@ export default function App() {
 
                     <div>
                       <label className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2 block">
-                        {lang === 'ar' ? 'Ø§Ù„Ø¥Ø¬Ø§Ø¨Ø© Ø§Ù„Ø§Ø­ØªÙŠØ§Ø·ÙŠØ©' : 'Backup answer'}
+                        {lang === 'ar' ? 'الإجابة الاحتياطية' : 'Backup answer'}
                       </label>
                       <input
                         type="text"
                         value={setupSecurityAnswer}
                         onChange={(e) => setSetupSecurityAnswer(e.target.value)}
                         className={`w-full bg-white/5 border border-white/10 rounded-2xl py-4 px-4 focus:outline-none focus:border-sky-500/50 ${currentTheme.text || 'text-white'}`}
-                        placeholder={lang === 'ar' ? 'Ø£Ø¯Ø®Ù„ Ø¥Ø¬Ø§Ø¨Ø© ØªØªØ°ÙƒØ±Ù‡Ø§ Ù„Ø§Ø­Ù‚Ù‹Ø§' : 'Enter an answer you can remember later'}
+                        placeholder={lang === 'ar' ? 'أدخل إجابة تتذكرها لاحقًا' : 'Enter an answer you can remember later'}
                       />
                     </div>
                   </>
@@ -2056,7 +2206,7 @@ export default function App() {
             </button>
             <button
               type="button"
-              aria-label={lang === 'ar' ? 'ÙØªØ­ Ø§Ù„ØªØ­Ù„ÙŠÙ„Ø§Øª' : 'Open analytics'}
+              aria-label={lang === 'ar' ? 'فتح التحليلات' : 'Open analytics'}
               onClick={() => setShowAnalyticsModal(true)}
               className="touch-icon-button border border-white/10 bg-white/5 text-slate-300"
             >
@@ -2113,7 +2263,7 @@ export default function App() {
                   <div className="mobile-card flex items-center justify-between border border-glass-border bg-white/5 p-4 shadow-inner">
                     <div>
                       <p className="text-[0.625rem] font-bold uppercase tracking-[0.24em] text-accent-primary">{t.dailyAllowance}</p>
-                      <p className="mt-1 text-[0.75rem] text-text-secondary">{lang === 'ar' ? 'Ø§Ù„Ù…ØªØ§Ø­ Ù„Ù„ÙŠÙˆÙ…' : 'Available for today'}</p>
+                      <p className="mt-1 text-[0.75rem] text-text-secondary">{lang === 'ar' ? 'المتاح لليوم' : 'Available for today'}</p>
                     </div>
                     <SensitiveText className="text-[1.25rem] font-bold text-text-primary">
                       {formatCurrency(displayedDailyAllowance, currency, lang, true)}
@@ -2139,11 +2289,104 @@ export default function App() {
               </div>
             </motion.div>
 
+            <section className="space-y-3">
+              <div className="flex items-end justify-between gap-3 px-1">
+                <div>
+                  <p className="text-[0.75rem] text-text-secondary">{lang === 'ar' ? 'مربوط بكل حساب' : 'Linked to every account'}</p>
+                  <h2 className={`text-[1.15rem] font-bold ${currentTheme.text || 'text-slate-50'}`}>
+                    {lang === 'ar' ? 'حساباتي' : 'My Accounts'}
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSettingsModal(true);
+                    setShowWalletManager(true);
+                  }}
+                  className="min-h-11 rounded-full border border-white/10 bg-white/5 px-4 text-[0.72rem] font-semibold text-text-primary"
+                >
+                  {lang === 'ar' ? 'إدارة الحسابات' : 'Manage accounts'}
+                </button>
+              </div>
+
+              <div className="flex gap-3 overflow-x-auto pb-1">
+                {walletSnapshots.map((wallet) => (
+                  <div
+                    key={wallet.id}
+                    className={`mobile-card min-w-[240px] flex-1 border p-4 backdrop-blur-xl ${
+                      selectedWalletFilter === wallet.id
+                        ? 'border-accent-primary/40 bg-accent-primary/12'
+                        : 'border-white/10 bg-white/[0.04]'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setSelectedWalletFilter(wallet.id)}
+                      className="w-full text-start"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 text-text-primary">
+                            <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/8">
+                              {WALLET_ICONS[wallet.icon] || WALLET_ICONS.wallet}
+                            </span>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-bold">{wallet.name}</p>
+                              <p className="truncate text-[0.72rem] text-text-secondary">{getWalletSubtitle(wallet, lang)}</p>
+                            </div>
+                          </div>
+                        </div>
+                        <span className="rounded-full border border-white/10 bg-white/6 px-2 py-1 text-[0.62rem] font-bold text-text-secondary">
+                          {wallet.count} {lang === 'ar' ? 'عمليات' : 'ops'}
+                        </span>
+                      </div>
+
+                      <SensitiveText className="mt-4 block text-[1.1rem] font-extrabold text-text-primary">
+                        {formatCurrency(wallet.balance, currency, lang, false)}
+                      </SensitiveText>
+
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-[0.72rem]">
+                        <div className="rounded-2xl border border-white/8 bg-white/5 p-3">
+                          <p className="text-text-secondary">{lang === 'ar' ? 'دخل' : 'Income'}</p>
+                          <SensitiveText className="mt-1 block font-bold text-emerald-400">
+                            +{formatCurrency(wallet.income, currency, lang, false)}
+                          </SensitiveText>
+                        </div>
+                        <div className="rounded-2xl border border-white/8 bg-white/5 p-3">
+                          <p className="text-text-secondary">{lang === 'ar' ? 'مصروف' : 'Outflow'}</p>
+                          <SensitiveText className="mt-1 block font-bold text-rose-400">
+                            -{formatCurrency(wallet.outflow, currency, lang, false)}
+                          </SensitiveText>
+                        </div>
+                      </div>
+                    </button>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openAddModal('income', wallet.id)}
+                        className="min-h-11 rounded-2xl border border-emerald-500/25 bg-emerald-500/12 px-3 text-xs font-bold text-emerald-300"
+                      >
+                        {lang === 'ar' ? 'إضافة دخل' : 'Add income'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openAddModal('expense', wallet.id)}
+                        className="min-h-11 rounded-2xl border border-white/10 bg-white/7 px-3 text-xs font-bold text-text-primary"
+                      >
+                        {lang === 'ar' ? 'تسجيل مصروف' : 'Record spend'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
             {/* Transactions List */}
             <div className="flex flex-1 flex-col gap-3">
               <div className="flex items-end justify-between gap-3 px-1">
                 <div>
-                  <p className="text-[0.75rem] text-text-secondary">{lang === 'ar' ? 'Ø¢Ø®Ø± Ù…Ø§ ØªÙ… ØªØ³Ø¬ÙŠÙ„Ù‡' : 'Latest activity'}</p>
+                  <p className="text-[0.75rem] text-text-secondary">{t.latestActivity}</p>
                   <h2 className={`text-[1.25rem] font-bold ${currentTheme.text || 'text-slate-50'}`}>{t.recentTransactions}</h2>
                 </div>
                 {transactions.length > 1 && (
@@ -2151,7 +2394,7 @@ export default function App() {
                     onClick={() => setActiveTab('transactions')}
                     className={`min-h-11 rounded-full border border-white/10 bg-white/5 px-4 text-[0.75rem] font-medium ${currentTheme.text || 'text-slate-300'}`}
                   >
-                    {lang === 'ar' ? 'Ø¹Ø±Ø¶ Ø§Ù„ÙƒÙ„' : 'Show All'}
+                    {t.showAll}
                   </button>
                 )}
               </div>
@@ -2161,7 +2404,7 @@ export default function App() {
                   <Activity className="h-10 w-10 opacity-30" />
                   <div className="space-y-1">
                     <p className="text-sm font-medium">{t.noTransactions}</p>
-                    <p className="text-xs text-text-secondary">{lang === 'ar' ? 'Ø§Ø¨Ø¯Ø£ Ø¨Ø¥Ø¶Ø§ÙØ© Ø£ÙˆÙ„ Ù…Ø¹Ø§Ù…Ù„Ø©.' : 'Add your first transaction to start tracking.'}</p>
+                    <p className="text-xs text-text-secondary">{lang === 'ar' ? 'ابدأ بإضافة أول معاملة.' : 'Add your first transaction to start tracking.'}</p>
                   </div>
                   <button
                     type="button"
@@ -2223,14 +2466,14 @@ export default function App() {
         ) : activeTab === 'transactions' ? (
           <div className="flex flex-1 flex-col gap-3">
             <div className="flex items-end justify-between gap-3 px-1">
-              <h2 className={`text-2xl font-bold ${currentTheme.text || 'text-slate-50'}`}>{lang === 'ar' ? 'Ø¬Ù…ÙŠØ¹ Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø§Øª' : 'All Transactions'}</h2>
+              <h2 className={`text-2xl font-bold ${currentTheme.text || 'text-slate-50'}`}>{t.allTransactions}</h2>
             </div>
             {transactions.length === 0 ? (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mobile-card flex h-56 flex-col items-center justify-center gap-4 border border-white/5 bg-white/[0.02] p-8 text-center text-slate-500">
                 <Activity className="h-10 w-10 opacity-30" />
                 <div className="space-y-1">
                   <p className="text-sm font-medium">{t.noTransactions}</p>
-                  <p className="text-xs text-text-secondary">{lang === 'ar' ? 'Ø£Ø¶Ù Ø£ÙˆÙ„ Ù…Ø¹Ø§Ù…Ù„Ø© Ù…Ù† Ø²Ø± Ø§Ù„Ø¥Ø¶Ø§ÙØ© Ø§Ù„Ø³ÙÙ„ÙŠ.' : 'Use the center add button to create your first transaction.'}</p>
+                  <p className="text-xs text-text-secondary">{lang === 'ar' ? 'أضف أول معاملة من زر الإضافة السفلي.' : 'Use the center add button to create your first transaction.'}</p>
                 </div>
                 <button
                   type="button"
@@ -2242,7 +2485,32 @@ export default function App() {
               </motion.div>
             ) : (
               <div className="space-y-4">
-                {groupedTransactions.map(([date, dayTransactions]) => (
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedWalletFilter('all')}
+                    className={`min-h-10 rounded-full border px-4 text-xs font-bold transition-colors ${selectedWalletFilter === 'all' ? 'border-accent-primary/40 bg-accent-primary/15 text-accent-primary' : 'border-white/10 bg-white/5 text-text-secondary'}`}
+                  >
+                    {t.allWallets}
+                  </button>
+                  {walletTransactionStats.map((wallet) => (
+                    <button
+                      key={wallet.id}
+                      type="button"
+                      onClick={() => setSelectedWalletFilter(wallet.id)}
+                      className={`min-h-10 rounded-full border px-4 text-xs font-bold transition-colors ${selectedWalletFilter === wallet.id ? 'border-accent-primary/40 bg-accent-primary/15 text-accent-primary' : 'border-white/10 bg-white/5 text-text-secondary'}`}
+                    >
+                      {wallet.name} ({wallet.count})
+                    </button>
+                  ))}
+                </div>
+
+                {visibleTransactions.length === 0 ? (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mobile-card flex h-44 flex-col items-center justify-center gap-3 border border-white/5 bg-white/[0.02] p-6 text-center text-slate-500">
+                    <Activity className="h-8 w-8 opacity-30" />
+                    <p className="text-sm font-medium">{t.noWalletTransactions}</p>
+                  </motion.div>
+                ) : groupedVisibleTransactions.map(([date, dayTransactions]) => (
                   <div key={date} className="space-y-2">
                     <div className="sticky top-0 z-10 flex justify-center py-2">
                       <span className={`text-[10px] font-bold uppercase tracking-widest px-4 py-1.5 rounded-full backdrop-blur-md border ${currentTheme.text ? 'bg-white/80 border-slate-200 text-slate-500' : 'bg-slate-900/80 border-white/10 text-slate-400'}`}>
@@ -2265,12 +2533,12 @@ export default function App() {
                               </div>
                               <div className="min-w-0">
                                 <p className={`truncate text-sm font-semibold ${currentTheme.text || 'text-slate-100'}`}>{item.name}</p>
-                                {wallet && (
-                                  <div className={`mt-0.5 flex items-center gap-1 text-[0.75rem] ${currentTheme.text ? 'text-slate-500' : 'text-slate-500'}`}>
-                                    {WALLET_ICONS[wallet.icon] || WALLET_ICONS['wallet']}
-                                    <span className="truncate">{wallet.name}</span>
-                                  </div>
-                                )}
+                                <div className={`mt-0.5 flex items-center gap-1 text-[0.75rem] ${currentTheme.text ? 'text-slate-500' : 'text-slate-500'}`}>
+                                  {wallet ? WALLET_ICONS[wallet.icon] || WALLET_ICONS['wallet'] : WALLET_ICONS.wallet}
+                                  <span className="truncate">{wallet?.name || t.allWallets}</span>
+                                  {item.origin === 'sms' && <span className="rounded-full bg-accent-primary/10 px-2 py-0.5 text-[0.6rem] font-bold text-accent-primary">SMS</span>}
+                                </div>
+                                {item.sender && <p className="mt-0.5 truncate text-[0.7rem] text-text-secondary">{item.sender}</p>}
                               </div>
                             </div>
                             <div className="text-end shrink-0 ms-2">
@@ -2323,7 +2591,7 @@ export default function App() {
             <span className={`touch-icon-button rounded-2xl transition-all ${activeTab === 'transactions' ? 'bg-white/10' : 'bg-transparent'}`}>
               <Activity className="w-5 h-5" />
             </span>
-            <span className="text-[10px] font-bold">{lang === 'ar' ? 'Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø§Øª' : 'Transactions'}</span>
+            <span className="text-[10px] font-bold">{t.transactions}</span>
           </button>
 
           <div className="fab-slot">
@@ -2358,7 +2626,7 @@ export default function App() {
             <span className={`touch-icon-button rounded-2xl transition-all ${showSettingsModal ? 'bg-white/10' : 'bg-transparent'}`}>
               <Settings className="w-5 h-5" />
             </span>
-            <span className="text-[10px] font-bold">{lang === 'ar' ? 'Ø§Ù„Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª' : 'Settings'}</span>
+            <span className="text-[10px] font-bold">{t.settings}</span>
           </button>
         </div>
       </nav>
@@ -2502,48 +2770,101 @@ export default function App() {
                   <label className={`text-xs font-medium uppercase tracking-wider mb-2 block text-text-secondary`}>{t.name}</label>
                   <input
                     type="text" value={formData.name || ''} onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    placeholder="e.g. Salary, Groceries..."
+                    placeholder={
+                      formData.type === 'income'
+                        ? (lang === 'ar' ? 'مثال: راتب، تحويل وارد...' : 'Example: Salary, incoming transfer...')
+                        : formData.type === 'debt'
+                          ? (lang === 'ar' ? 'مثال: قسط، ادخار...' : 'Example: Installment, saving...')
+                          : (lang === 'ar' ? 'مثال: مشتريات، فاتورة...' : 'Example: Groceries, bill...')
+                    }
                     className={`w-full bg-bg-tertiary border border-glass-border rounded-2xl p-4 focus:outline-none focus:border-accent-primary/50 text-start transition-colors text-text-primary`}
                   />
                 </div>
 
-                {/* Wallet & Date Grid */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className={`text-xs font-medium uppercase tracking-wider mb-2 block text-text-secondary`}>{t.wallet}</label>
-                    <div className="relative">
-                      <select
-                        value={formData.walletId || ''} onChange={(e) => setFormData({ ...formData, walletId: e.target.value })}
-                        className={`w-full bg-bg-tertiary border border-glass-border rounded-2xl p-4 focus:outline-none focus:border-accent-primary/50 text-start transition-colors appearance-none text-text-primary`}
+                <div>
+                  <label className={`text-xs font-medium uppercase tracking-wider mb-2 block text-text-secondary`}>
+                    {formData.type === 'income'
+                      ? (lang === 'ar' ? 'إضافة المبلغ إلى' : 'Receive into')
+                      : (lang === 'ar' ? 'تسجيل المعاملة على' : 'Use account')}
+                  </label>
+                  <div className="grid grid-cols-1 gap-3">
+                    {walletSnapshots.map((wallet) => (
+                      <button
+                        key={wallet.id}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, walletId: wallet.id })}
+                        className={`rounded-[1.25rem] border p-4 text-start transition-colors ${
+                          formData.walletId === wallet.id
+                            ? 'border-accent-primary/45 bg-accent-primary/12'
+                            : 'border-glass-border bg-bg-tertiary'
+                        }`}
                       >
-                        {wallets.map(w => <option key={w.id} value={w.id} className="bg-[#0f172a] text-white">{w.name}</option>)}
-                      </select>
-                      <div className="absolute inset-y-0 end-4 flex items-center pointer-events-none text-slate-400">
-                        <ChevronRight className="w-4 h-4 rotate-90" />
-                      </div>
-                    </div>
-                  </div>
-                  <div>
-                    <label className={`text-xs font-medium uppercase tracking-wider mb-2 block text-text-secondary`}>{t.date}</label>
-                    <input
-                      type="date" value={formData.date || ''} onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                      className={`w-full bg-bg-tertiary border border-glass-border rounded-2xl p-4 focus:outline-none focus:border-accent-primary/50 text-start transition-colors [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-50 text-text-primary`}
-                    />
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/8 text-text-primary">
+                              {WALLET_ICONS[wallet.icon] || WALLET_ICONS.wallet}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-bold text-text-primary">{wallet.name}</p>
+                              <p className="truncate text-[0.72rem] text-text-secondary">{getWalletSubtitle(wallet, lang)}</p>
+                            </div>
+                          </div>
+                          {formData.walletId === wallet.id && (
+                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-primary text-text-on-accent">
+                              <Check className="h-4 w-4" />
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/5 px-3 py-2 text-[0.72rem]">
+                          <span className="text-text-secondary">{lang === 'ar' ? 'الرصيد الحالي' : 'Current balance'}</span>
+                          <SensitiveText className="font-bold text-text-primary">
+                            {formatCurrency(wallet.balance, currency, lang, false)}
+                          </SensitiveText>
+                        </div>
+                      </button>
+                    ))}
                   </div>
                 </div>
 
+                <div>
+                  <label className={`text-xs font-medium uppercase tracking-wider mb-2 block text-text-secondary`}>{t.date}</label>
+                  <input
+                    type="date" value={formData.date || ''} onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                    className={`w-full bg-bg-tertiary border border-glass-border rounded-2xl p-4 focus:outline-none focus:border-accent-primary/50 text-start transition-colors [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-50 text-text-primary`}
+                  />
+                </div>
+
+                {selectedFormWallet && (
+                  <div className="rounded-2xl border border-accent-primary/20 bg-accent-primary/8 p-4">
+                    <p className="text-[0.7rem] font-medium uppercase tracking-[0.22em] text-accent-primary">
+                      {lang === 'ar' ? 'الحساب المحدد' : 'Selected account'}
+                    </p>
+                    <div className="mt-2 flex items-center gap-3">
+                      <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-white/8 text-text-primary">
+                        {WALLET_ICONS[selectedFormWallet.icon] || WALLET_ICONS.wallet}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-text-primary">{selectedFormWallet.name}</p>
+                        <p className="truncate text-[0.75rem] text-text-secondary">
+                          {getWalletSubtitle(selectedFormWallet, lang)}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Recurring Options */}
                 <div>
-                  <label className={`text-xs font-medium uppercase tracking-wider mb-2 block text-text-secondary`}>{lang === 'ar' ? 'ØªÙƒØ±Ø§Ø±' : 'Recurring'}</label>
+                  <label className={`text-xs font-medium uppercase tracking-wider mb-2 block text-text-secondary`}>{lang === 'ar' ? 'تكرار' : 'Recurring'}</label>
                   <div className="relative">
                     <select
                       value={formData.recurring || 'none'} onChange={(e) => setFormData({ ...formData, recurring: e.target.value as any })}
                       className={`w-full bg-bg-tertiary border border-glass-border rounded-2xl p-4 focus:outline-none focus:border-accent-primary/50 text-start transition-colors appearance-none text-text-primary`}
                     >
-                      <option value="none" className="bg-[#0f172a] text-white">{lang === 'ar' ? 'Ù„Ø§ ÙŠØªÙƒØ±Ø±' : 'None'}</option>
-                      <option value="daily" className="bg-[#0f172a] text-white">{lang === 'ar' ? 'ÙŠÙˆÙ…ÙŠØ§Ù‹' : 'Daily'}</option>
-                      <option value="weekly" className="bg-[#0f172a] text-white">{lang === 'ar' ? 'Ø£Ø³Ø¨ÙˆØ¹ÙŠØ§Ù‹' : 'Weekly'}</option>
-                      <option value="monthly" className="bg-[#0f172a] text-white">{lang === 'ar' ? 'Ø´Ù‡Ø±ÙŠØ§Ù‹' : 'Monthly'}</option>
+                      <option value="none" className="bg-[#0f172a] text-white">{lang === 'ar' ? 'لا يتكرر' : 'None'}</option>
+                      <option value="daily" className="bg-[#0f172a] text-white">{lang === 'ar' ? 'يوميًا' : 'Daily'}</option>
+                      <option value="weekly" className="bg-[#0f172a] text-white">{lang === 'ar' ? 'أسبوعيًا' : 'Weekly'}</option>
+                      <option value="monthly" className="bg-[#0f172a] text-white">{lang === 'ar' ? 'شهريًا' : 'Monthly'}</option>
                     </select>
                     <div className="absolute inset-y-0 end-4 flex items-center pointer-events-none text-text-secondary">
                       <ChevronRight className="w-4 h-4 rotate-90" />
@@ -2551,7 +2872,7 @@ export default function App() {
                   </div>
                   {formData.recurring && formData.recurring !== 'none' && (
                     <p className={`text-xs mt-2 text-accent-primary`}>
-                      {lang === 'ar' ? 'Ø³ÙˆÙ ÙŠØªÙ… Ø¥Ø¶Ø§ÙØ© Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø© ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹ ÙÙŠ Ù‡Ø°Ø§ Ø§Ù„Ù…ÙˆØ¹Ø¯' : 'Transaction will be automatically generated.'}
+                      {lang === 'ar' ? 'سوف تتم إضافة المعاملة تلقائيًا في هذا الموعد.' : 'Transaction will be automatically generated.'}
                     </p>
                   )}
                 </div>
@@ -2586,11 +2907,11 @@ export default function App() {
                 <AlertTriangle className="w-8 h-8 text-danger" />
               </div>
               <h3 className={`text-xl font-bold mb-2 text-text-primary`}>
-                {lang === 'ar' ? 'Ø­Ø°Ù Ø¬Ù…ÙŠØ¹ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§ØªØŸ' : 'Reset All Data?'}
+                {lang === 'ar' ? 'حذف جميع البيانات؟' : 'Reset All Data?'}
               </h3>
               <p className="text-text-secondary text-sm mb-6">
                 {lang === 'ar' 
-                  ? 'Ù‡Ø°Ø§ Ø§Ù„Ø¥Ø¬Ø±Ø§Ø¡ Ø³ÙŠÙ‚ÙˆÙ… Ø¨Ø­Ø°Ù Ø¬Ù…ÙŠØ¹ Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø§Øª ÙˆØ§Ù„Ù…Ø­Ø§ÙØ¸ ÙˆØ§Ù„Ø¬Ù…Ø¹ÙŠØ§Øª Ø§Ù„Ù…ØªØ¹Ù„Ù‚Ø© Ø¨Ùƒ. Ù„Ù† ØªØªÙ…ÙƒÙ† Ù…Ù† Ø§Ù„ØªØ±Ø§Ø¬Ø¹ Ø¹Ù† Ù‡Ø°Ø§.' 
+                  ? 'سيتم حذف كل المعاملات ووسائل الدفع والجمعيات نهائيًا. لا يمكن التراجع عن هذا الإجراء.' 
                   : 'This action will permanently delete all your transactions, wallets, and gam3eyat. This cannot be undone.'}
               </p>
               
@@ -2599,7 +2920,7 @@ export default function App() {
                   {t.cancel}
                 </button>
                 <button onClick={handleReset} className={`flex-1 py-3 rounded-xl font-bold text-white transition-colors bg-danger hover:opacity-90`}>
-                  {lang === 'ar' ? 'Ù†Ø¹Ù…ØŒ Ø­Ø°Ù' : 'Yes, Delete'}
+                  {lang === 'ar' ? 'نعم، حذف' : 'Yes, Delete'}
                 </button>
               </div>
             </motion.div>
@@ -2637,14 +2958,13 @@ export default function App() {
                   className="w-full py-3 rounded-xl bg-success/10 hover:bg-success/20 border border-success/20 text-success transition-colors text-sm font-bold flex items-center justify-center gap-2"
                 >
                   <Smartphone className="w-4 h-4" />
-                  {lang === 'ar' ? 'ØªÙØ¹ÙŠÙ„ Ø§Ù„Ù‚Ø±Ø§Ø¡Ø© Ø§Ù„ØªÙ„Ù‚Ø§Ø¦ÙŠØ© (Ø£Ù†Ø¯Ø±ÙˆÙŠØ¯ ÙÙ‚Ø·)' : 'Enable Auto-Read (Android Only)'}
+                  {lang === 'ar' ? 'تفعيل القراءة التلقائية (أندرويد فقط)' : 'Enable Auto-Read (Android Only)'}
                 </button>
 
                 <div className="relative space-y-3">
-                  {/* Mock sender input for web testing */}
                   <input
                     type="text"
-                    placeholder={lang === 'ar' ? 'Ø§Ø³Ù… Ø§Ù„Ù…Ø±Ø³Ù„ (Sender ID)' : 'Sender ID'}
+                    placeholder={lang === 'ar' ? 'اسم المرسل (Sender ID)' : 'Sender ID'}
                     value={smsSenderId}
                     onChange={(e) => setSmsSenderId(e.target.value)}
                     className={`w-full bg-bg-tertiary border border-glass-border rounded-2xl p-4 focus:outline-none focus:border-accent-primary/50 transition-colors text-text-primary`}
@@ -2660,17 +2980,68 @@ export default function App() {
                     className="absolute bottom-3 right-3 p-2 bg-glass-bg border border-glass-border hover:bg-bg-tertiary rounded-xl text-text-primary transition-colors flex items-center gap-2 text-xs font-medium backdrop-blur-md"
                   >
                     <Upload className="w-4 h-4" />
-                    {lang === 'ar' ? 'Ù„ØµÙ‚ Ù…Ù† Ø§Ù„Ø­Ø§ÙØ¸Ø©' : 'Paste from Clipboard'}
+                    {lang === 'ar' ? 'لصق من الحافظة' : 'Paste from Clipboard'}
                   </button>
                 </div>
-                <button 
-                  onClick={handleParseSms}
-                  disabled={!smsText.trim()}
-                  className={`w-full py-4 rounded-2xl font-bold text-text-on-accent bg-accent-primary transition-opacity hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2`}
-                >
-                  <Sparkles className="w-5 h-5" />
-                  {t.parse}
-                </button>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-secondary">{t.messageAccount}</label>
+                  <select
+                    value={smsReviewWalletId}
+                    onChange={(e) => setSmsReviewWalletId(e.target.value)}
+                    className="w-full rounded-2xl border border-glass-border bg-bg-tertiary p-4 text-text-primary focus:border-accent-primary/50 focus:outline-none"
+                  >
+                    {wallets.map((wallet) => (
+                      <option key={wallet.id} value={wallet.id}>
+                        {wallet.accountRef ? `${wallet.name} • ${wallet.accountRef}` : wallet.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {smsDraftPreview && (
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-medium text-text-secondary">{t.messageDetails}</p>
+                        <p className="mt-1 text-sm font-bold text-text-primary">{smsDraftPreview.finalName}</p>
+                      </div>
+                      <span className={`rounded-full border px-3 py-1 text-[0.65rem] font-bold ${getSmsAlertAccent(smsDraftPreview.verificationResult.status)}`}>
+                        {getSmsStatusLabel(smsDraftPreview.verificationResult.status, lang)}
+                      </span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <p className="text-xs text-text-secondary">{t.messageSender}</p>
+                        <p className="mt-1 font-medium text-text-primary">{smsDraftPreview.sender}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-text-secondary">{t.amount}</p>
+                        <p className="mt-1 font-medium text-text-primary">
+                          {smsDraftPreview.amount > 0 ? formatCurrency(smsDraftPreview.amount, currency, lang, false) : (lang === 'ar' ? 'غير واضح' : 'Unclear')}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <button 
+                    onClick={handleParseSms}
+                    disabled={!smsText.trim()}
+                    className="w-full rounded-2xl border border-white/10 bg-white/5 py-4 font-bold text-text-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+                  >
+                    {t.editBeforeSave}
+                  </button>
+                  <button 
+                    onClick={handleSaveSmsTransaction}
+                    disabled={!smsText.trim()}
+                    className="w-full rounded-2xl bg-accent-primary py-4 font-bold text-text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    <Sparkles className="w-5 h-5" />
+                    {t.saveFromMessage}
+                  </button>
+                </div>
               </div>
             </motion.div>
           </motion.div>
@@ -2695,12 +3066,12 @@ export default function App() {
               
               <div className="space-y-4 text-sm text-start">
                 <div className="bg-white/5 rounded-xl p-3 border border-white/5">
-                  <p className="text-slate-400 text-xs mb-1">{lang === 'ar' ? 'Ø§Ù„Ù…Ø·ÙˆØ±' : 'Developer'}</p>
-                  <p className={`font-bold ${currentTheme.text || 'text-white'}`}>{lang === 'ar' ? 'Ø²ÙŠØ§Ø¯ ÙŠØ­ÙŠ Ø²ÙƒØ±ÙŠØ§ Ø§Ø­Ù…Ø¯' : 'Ziad Yehia Zakaria Ahmed'}</p>
+                  <p className="text-slate-400 text-xs mb-1">{lang === 'ar' ? 'المطور' : 'Developer'}</p>
+                  <p className={`font-bold ${currentTheme.text || 'text-white'}`}>{lang === 'ar' ? 'زياد يحيى زكريا أحمد' : 'Ziad Yehia Zakaria Ahmed'}</p>
                 </div>
                 
                 <div className="bg-white/5 rounded-xl p-3 border border-white/5 flex items-center justify-between">
-                  <span className="text-slate-400">{lang === 'ar' ? 'Ø§Ù„Ù‡Ø§ØªÙ' : 'Phone'}</span>
+                  <span className="text-slate-400">{lang === 'ar' ? 'الهاتف' : 'Phone'}</span>
                   <a href="tel:+201124148723" className="font-bold text-sky-400" dir="ltr">+20 112 414 8723</a>
                 </div>
                 
@@ -2716,7 +3087,7 @@ export default function App() {
               </div>
               
               <p className="text-xs text-slate-500 mt-6">
-                Â© {new Date().getFullYear()} {t.brand}. {lang === 'ar' ? 'Ø¬Ù…ÙŠØ¹ Ø§Ù„Ø­Ù‚ÙˆÙ‚ Ù…Ø­ÙÙˆØ¸Ø©.' : 'All rights reserved.'}
+                © {new Date().getFullYear()} {t.brand}. {lang === 'ar' ? 'جميع الحقوق محفوظة.' : 'All rights reserved.'}
               </p>
             </motion.div>
           </motion.div>
@@ -2759,12 +3130,12 @@ export default function App() {
                           <div>
                             <p className="text-sm font-semibold text-text-primary">
                               {pinEnabled
-                                ? (lang === 'ar' ? `Ù‚ÙÙ„ PIN Ù…ÙØ¹Ù„ (${pinLength} Ø£Ø±Ù‚Ø§Ù…)` : `PIN lock enabled (${pinLength} digits)`)
-                                : (lang === 'ar' ? 'Ù‚ÙÙ„ PIN ØºÙŠØ± Ù…ÙØ¹Ù„' : 'PIN lock is off')}
+                                ? (lang === 'ar' ? `قفل PIN مفعّل (${pinLength} أرقام)` : `PIN lock enabled (${pinLength} digits)`)
+                                : (lang === 'ar' ? 'قفل PIN غير مفعّل' : 'PIN lock is off')}
                             </p>
                             <p className="mt-1 text-[0.75rem] text-text-secondary">
                               {lang === 'ar'
-                                ? 'Ø§Ù„Ù‚ÙÙ„ ÙŠØ¸Ù‡Ø± Ù…Ø¨Ø§Ø´Ø±Ø© Ø¹Ù†Ø¯ ÙØªØ­ Ø§Ù„ØªØ·Ø¨ÙŠÙ‚ Ø£Ùˆ Ø¹Ù†Ø¯ Ø¹ÙˆØ¯ØªÙ‡ Ù…Ù† Ø§Ù„Ø®Ù„ÙÙŠØ©.'
+                                ? 'القفل يظهر مباشرة عند فتح التطبيق أو عند العودة من الخلفية.'
                                 : 'The app locks on open, on backgrounding, and after inactivity.'}
                             </p>
                           </div>
@@ -2774,14 +3145,14 @@ export default function App() {
                               onClick={handleDisablePin}
                               className="min-h-11 rounded-full border border-danger/25 bg-danger/10 px-4 text-[0.75rem] font-bold text-danger"
                             >
-                              {lang === 'ar' ? 'ØªØ¹Ø·ÙŠÙ„' : 'Disable'}
+                              {lang === 'ar' ? 'تعطيل' : 'Disable'}
                             </button>
                           )}
                         </div>
 
                         <div className="space-y-2">
                           <label className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-                            {lang === 'ar' ? 'Ø·ÙˆÙ„ Ø±Ù…Ø² PIN' : 'PIN length'}
+                            {lang === 'ar' ? 'طول رمز PIN' : 'PIN length'}
                           </label>
                           <div className="grid grid-cols-2 gap-2">
                             {[4, 6].map((lengthOption) => (
@@ -2791,7 +3162,7 @@ export default function App() {
                                 onClick={() => setSettingsPinLengthDraft(lengthOption as PinLength)}
                                 className={`min-h-11 rounded-2xl border text-sm font-semibold transition-colors ${settingsPinLengthDraft === lengthOption ? 'border-accent-primary/50 bg-accent-primary/15 text-accent-primary' : 'border-glass-border bg-white/5 text-text-secondary'}`}
                               >
-                                {lengthOption} {lang === 'ar' ? 'Ø£Ø±Ù‚Ø§Ù…' : 'digits'}
+                                {lengthOption} {lang === 'ar' ? 'أرقام' : 'digits'}
                               </button>
                             ))}
                           </div>
@@ -2800,7 +3171,7 @@ export default function App() {
                         <div className="grid grid-cols-1 gap-3">
                           <div>
                             <label className="mb-2 block text-xs font-medium uppercase tracking-wider text-text-secondary">
-                              {pinEnabled ? (lang === 'ar' ? 'PIN Ø¬Ø¯ÙŠØ¯' : 'New PIN') : (lang === 'ar' ? 'ØªÙØ¹ÙŠÙ„ PIN' : 'Enable PIN')}
+                              {pinEnabled ? (lang === 'ar' ? 'PIN جديد' : 'New PIN') : (lang === 'ar' ? 'تفعيل PIN' : 'Enable PIN')}
                             </label>
                             <input
                               type="password"
@@ -2814,7 +3185,7 @@ export default function App() {
                           </div>
                           <div>
                             <label className="mb-2 block text-xs font-medium uppercase tracking-wider text-text-secondary">
-                              {lang === 'ar' ? 'ØªØ£ÙƒÙŠØ¯ PIN' : 'Confirm PIN'}
+                              {lang === 'ar' ? 'تأكيد PIN' : 'Confirm PIN'}
                             </label>
                             <input
                               type="password"
@@ -2831,7 +3202,7 @@ export default function App() {
                         <div className="space-y-3 border-t border-glass-border pt-4">
                           <div>
                             <label className="mb-2 block text-xs font-medium uppercase tracking-wider text-text-secondary">
-                              {lang === 'ar' ? 'Ø³Ø¤Ø§Ù„ Ø§Ù„Ø£Ù…Ø§Ù†' : 'Security question'}
+                              {lang === 'ar' ? 'سؤال الأمان' : 'Security question'}
                             </label>
                             <select
                               value={settingsSecurityQuestionId}
@@ -2847,14 +3218,14 @@ export default function App() {
                           </div>
                           <div>
                             <label className="mb-2 block text-xs font-medium uppercase tracking-wider text-text-secondary">
-                              {lang === 'ar' ? 'Ø¥Ø¬Ø§Ø¨Ø© Ø§Ù„Ø§Ø³ØªØ¹Ø§Ø¯Ø©' : 'Recovery answer'}
+                              {lang === 'ar' ? 'إجابة الاستعادة' : 'Recovery answer'}
                             </label>
                             <input
                               type="text"
                               value={settingsSecurityAnswer}
                               onChange={(e) => setSettingsSecurityAnswer(e.target.value)}
                               className="w-full rounded-2xl border border-glass-border bg-white/5 px-4 py-4 text-text-primary focus:border-accent-primary/50 focus:outline-none"
-                              placeholder={securityAnswerHash ? (lang === 'ar' ? 'Ø§ØªØ±ÙƒÙ‡ ÙØ§Ø±ØºÙ‹Ø§ Ù„Ù„Ø§Ø­ØªÙØ§Ø¸ Ø¨Ø§Ù„Ø¥Ø¬Ø§Ø¨Ø© Ø§Ù„Ø­Ø§Ù„ÙŠØ©' : 'Leave blank to keep the current answer') : (lang === 'ar' ? 'Ø¥Ø¬Ø§Ø¨Ø© Ù…Ø·Ù„ÙˆØ¨Ø© Ù„Ø§Ø³ØªØ±Ø¬Ø§Ø¹ PIN' : 'Required for PIN recovery')}
+                              placeholder={securityAnswerHash ? (lang === 'ar' ? 'اتركه فارغًا للاحتفاظ بالإجابة الحالية' : 'Leave blank to keep the current answer') : (lang === 'ar' ? 'إجابة مطلوبة لاسترجاع PIN' : 'Required for PIN recovery')}
                             />
                           </div>
                         </div>
@@ -2862,18 +3233,18 @@ export default function App() {
                         <div className="space-y-3 border-t border-glass-border pt-4">
                           <div>
                             <label className="mb-2 block text-xs font-medium uppercase tracking-wider text-text-secondary">
-                              {lang === 'ar' ? 'Ø§Ù„Ù‚ÙÙ„ Ø§Ù„ØªÙ„Ù‚Ø§Ø¦ÙŠ' : 'Auto-lock'}
+                              {lang === 'ar' ? 'القفل التلقائي' : 'Auto-lock'}
                             </label>
                             <select
                               value={autoLockPreference}
                               onChange={(e) => setAutoLockPreference(e.target.value as AutoLockSetting)}
                               className="w-full rounded-2xl border border-glass-border bg-white/5 px-4 py-4 text-sm text-text-primary focus:border-accent-primary/50 focus:outline-none"
                             >
-                              <option value="1">{lang === 'ar' ? 'Ø¯Ù‚ÙŠÙ‚Ø© ÙˆØ§Ø­Ø¯Ø©' : '1 minute'}</option>
-                              <option value="5">{lang === 'ar' ? '5 Ø¯Ù‚Ø§Ø¦Ù‚' : '5 minutes'}</option>
-                              <option value="10">{lang === 'ar' ? '10 Ø¯Ù‚Ø§Ø¦Ù‚' : '10 minutes'}</option>
-                              <option value="30">{lang === 'ar' ? '30 Ø¯Ù‚ÙŠÙ‚Ø©' : '30 minutes'}</option>
-                              <option value="never">{lang === 'ar' ? 'Ø£Ø¨Ø¯Ù‹Ø§' : 'Never'}</option>
+                              <option value="1">{lang === 'ar' ? 'دقيقة واحدة' : '1 minute'}</option>
+                              <option value="5">{lang === 'ar' ? '5 دقائق' : '5 minutes'}</option>
+                              <option value="10">{lang === 'ar' ? '10 دقائق' : '10 minutes'}</option>
+                              <option value="30">{lang === 'ar' ? '30 دقيقة' : '30 minutes'}</option>
+                              <option value="never">{lang === 'ar' ? 'أبدًا' : 'Never'}</option>
                             </select>
                           </div>
 
@@ -2883,8 +3254,8 @@ export default function App() {
                                 <p className="text-sm font-semibold text-text-primary">{t.biometricAuth}</p>
                                 <p className="text-[0.75rem] text-text-secondary">
                                   {biometricCredentialId
-                                    ? (useBiometrics ? (lang === 'ar' ? 'Ø§Ù„Ø¨ØµÙ…Ø© Ù…ÙØ¹Ù„Ø© Ø¹Ù„Ù‰ Ø´Ø§Ø´Ø© Ø§Ù„Ù‚ÙÙ„.' : 'Biometric unlock is enabled on the lock screen.') : (lang === 'ar' ? 'ØªÙ… ØªØ³Ø¬ÙŠÙ„ Ø§Ù„Ø¨ØµÙ…Ø© Ù„ÙƒÙ†Ù‘Ù‡Ø§ ØºÙŠØ± Ù…ÙØ¹Ù„Ø©.' : 'Biometric is registered but currently disabled.'))
-                                    : (lang === 'ar' ? 'Ø³Ø¬Ù‘Ù„ Ø¨ØµÙ…Ø©/ÙˆØ¬Ù‡ Ù„Ù‡Ø°Ø§ Ø§Ù„Ø¬Ù‡Ø§Ø².' : 'Register this device for fingerprint / face unlock.')}
+                                    ? (useBiometrics ? (lang === 'ar' ? 'البصمة مفعّلة على شاشة القفل.' : 'Biometric unlock is enabled on the lock screen.') : (lang === 'ar' ? 'تم تسجيل البصمة لكنها غير مفعّلة.' : 'Biometric is registered but currently disabled.'))
+                                    : (lang === 'ar' ? 'سجّل بصمة أو وجه لهذا الجهاز.' : 'Register this device for fingerprint or face unlock.')}
                                 </p>
                               </div>
                               <button
@@ -2894,12 +3265,12 @@ export default function App() {
                                 className={`min-h-11 rounded-full px-4 text-sm font-bold ${biometricBusy ? 'bg-white/10 text-text-secondary' : currentTheme.btn}`}
                               >
                                 {biometricBusy
-                                  ? (lang === 'ar' ? 'Ø¬Ø§Ø±Ù...' : 'Working...')
+                                  ? (lang === 'ar' ? 'جارٍ...' : 'Working...')
                                   : useBiometrics
-                                    ? (lang === 'ar' ? 'Ø¥ÙŠÙ‚Ø§Ù' : 'Disable')
+                                    ? (lang === 'ar' ? 'إيقاف' : 'Disable')
                                     : biometricCredentialId
-                                      ? (lang === 'ar' ? 'ØªÙØ¹ÙŠÙ„' : 'Enable')
-                                      : (lang === 'ar' ? 'ØªØ³Ø¬ÙŠÙ„' : 'Register')}
+                                      ? (lang === 'ar' ? 'تفعيل' : 'Enable')
+                                      : (lang === 'ar' ? 'تسجيل' : 'Register')}
                               </button>
                             </div>
                           )}
@@ -2926,7 +3297,7 @@ export default function App() {
                             value={fakeBalanceInput}
                             onChange={(e) => setFakeBalanceInput(e.target.value)}
                             className="w-full rounded-2xl border border-glass-border bg-white/5 px-4 py-4 text-text-primary focus:border-accent-primary/50 focus:outline-none"
-                            placeholder={lang === 'ar' ? 'Ù…Ø«Ø§Ù„: 25000' : 'Example: 25000'}
+                            placeholder={lang === 'ar' ? 'مثال: 25000' : 'Example: 25000'}
                           />
                         </div>
 
@@ -2943,7 +3314,7 @@ export default function App() {
                         )}
 
                         <button type="submit" className={`w-full min-h-11 rounded-2xl text-sm font-bold ${currentTheme.btn}`}>
-                          {lang === 'ar' ? 'Ø­ÙØ¸ Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Ø§Ù„Ø£Ù…Ø§Ù†' : 'Save Security Settings'}
+                          {lang === 'ar' ? 'حفظ إعدادات الأمان' : 'Save Security Settings'}
                         </button>
                       </form>
                     </div>
@@ -2982,7 +3353,7 @@ export default function App() {
                         <label className={`text-sm font-medium text-text-secondary`}>{t.language}</label>
                         <select value={lang} onChange={(e) => setLang(e.target.value as Language)} className={`w-full bg-bg-tertiary border border-glass-border rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-accent-primary/50 [&>option]:bg-bg-primary text-text-primary`}>
                           <option value="en">English</option>
-                          <option value="ar">Ø§Ù„Ø¹Ø±Ø¨ÙŠØ©</option>
+                          <option value="ar">العربية</option>
                         </select>
                       </div>
                       <div className="space-y-2">
@@ -3011,7 +3382,7 @@ export default function App() {
                         <Trash2 className="w-4 h-4" /> {t.resetData}
                       </button>
                       <button onClick={() => { setShowSettingsModal(false); setShowAboutModal(true); }} className="w-full py-3 rounded-xl bg-accent-primary/10 hover:bg-accent-primary/20 border border-accent-primary/20 text-accent-primary transition-colors text-sm font-medium flex items-center justify-center gap-2">
-                        <Info className="w-4 h-4" /> {lang === 'ar' ? 'Ø¹Ù† Ø§Ù„ØªØ·Ø¨ÙŠÙ‚' : 'About App'}
+                        <Info className="w-4 h-4" /> {lang === 'ar' ? 'عن التطبيق' : 'About App'}
                       </button>
                     </div>
                     </div>
@@ -3019,7 +3390,14 @@ export default function App() {
                 ) : (
                   <motion.div key="wallet-manager" initial={{ x: 20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 20, opacity: 0 }}>
                     <div className="mobile-subpage-header">
-                      <button onClick={() => { setShowWalletManager(false); setEditingWalletId(null); }} className="touch-icon-button border border-glass-border bg-bg-tertiary text-text-secondary">
+                      <button
+                        onClick={() => {
+                          setShowWalletManager(false);
+                          setEditingWalletId(null);
+                          setWalletFormData({ icon: 'cash', kind: 'cash', name: '', provider: '', accountRef: '' });
+                        }}
+                        className="touch-icon-button border border-glass-border bg-bg-tertiary text-text-secondary"
+                      >
                         <ChevronLeft className="w-5 h-5 rtl:rotate-180" />
                       </button>
                       <div className="min-w-0">
@@ -3029,15 +3407,32 @@ export default function App() {
                     </div>
 
                     <div className="mobile-subpage-body pt-2 space-y-6">
-                    <div className="space-y-3 max-h-[40vh] overflow-y-auto pe-2 scrollbar-custom">
+                    <div className="space-y-3 max-h-[42vh] overflow-y-auto pe-2 scrollbar-custom">
                       {wallets.map(w => (
-                        <div key={w.id} className="flex items-center justify-between p-3 bg-bg-tertiary rounded-xl border border-glass-border">
-                          <div className={`flex items-center gap-3 text-text-primary`}>
+                        <div key={w.id} className="flex items-center justify-between gap-3 p-3 bg-bg-tertiary rounded-xl border border-glass-border">
+                          <div className={`min-w-0 flex items-center gap-3 text-text-primary`}>
                             <div className="p-2 bg-glass-bg rounded-lg">{WALLET_ICONS[w.icon] || WALLET_ICONS['wallet']}</div>
-                            <span className="font-medium">{w.name}</span>
+                            <div className="min-w-0">
+                              <p className="truncate font-medium">{w.name}</p>
+                              <p className="truncate text-[0.72rem] text-text-secondary">{getWalletSubtitle(w, lang)}</p>
+                            </div>
                           </div>
                           <div className="flex gap-2">
-                            <button onClick={() => { setEditingWalletId(w.id); setWalletFormData({ name: w.name, icon: w.icon }); }} className="p-2 text-text-secondary hover:text-accent-primary"><Edit2 className="w-4 h-4" /></button>
+                            <button
+                              onClick={() => {
+                                setEditingWalletId(w.id);
+                                setWalletFormData({
+                                  name: w.name,
+                                  icon: w.icon,
+                                  kind: inferWalletKind(w),
+                                  provider: w.provider || '',
+                                  accountRef: w.accountRef || '',
+                                });
+                              }}
+                              className="p-2 text-text-secondary hover:text-accent-primary"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
                             <button onClick={() => handleDeleteWallet(w.id)} className="p-2 text-text-secondary hover:text-danger"><Trash2 className="w-4 h-4" /></button>
                           </div>
                         </div>
@@ -3047,6 +3442,31 @@ export default function App() {
                     <form onSubmit={handleSaveWallet} className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-4">
                       <h4 className={`text-sm font-bold ${currentTheme.text || 'text-slate-300'}`}>{editingWalletId ? t.editWallet : t.addWallet}</h4>
                       
+                      <div>
+                        <label className={`text-xs mb-2 block ${currentTheme.text ? 'text-slate-600' : 'text-slate-400'}`}>
+                          {lang === 'ar' ? 'نوع الحساب' : 'Account type'}
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          {WALLET_KIND_OPTIONS.map((option) => (
+                            <button
+                              key={option.value}
+                              type="button"
+                              onClick={() => setWalletFormData({ ...walletFormData, kind: option.value, icon: option.icon })}
+                              className={`rounded-xl border px-3 py-3 text-xs font-bold transition-colors ${
+                                inferWalletKind(walletFormData) === option.value
+                                  ? 'border-accent-primary/40 bg-accent-primary/12 text-accent-primary'
+                                  : 'border-white/10 bg-white/5 text-text-secondary'
+                              }`}
+                            >
+                              <span className="mb-1 flex items-center justify-center">
+                                {WALLET_ICONS[option.icon] || WALLET_ICONS.wallet}
+                              </span>
+                              <span>{option.label[lang]}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
                       <div>
                         <label className={`text-xs mb-2 block ${currentTheme.text ? 'text-slate-600' : 'text-slate-400'}`}>{t.selectIcon}</label>
                         <div className="flex gap-2 flex-wrap">
@@ -3067,13 +3487,47 @@ export default function App() {
                         <input 
                           type="text" value={walletFormData.name || ''} onChange={(e) => setWalletFormData({ ...walletFormData, name: e.target.value })}
                           className={`w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-sky-500/50 ${currentTheme.text || 'text-slate-50'}`}
-                          placeholder="e.g. PayPal, Cash..."
+                          placeholder={lang === 'ar' ? 'مثال: فودافون كاش الشخصي' : 'Example: Personal Vodafone Cash'}
                         />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={`text-xs mb-2 block ${currentTheme.text ? 'text-slate-600' : 'text-slate-400'}`}>
+                            {lang === 'ar' ? 'المزوّد / الجهة' : 'Provider'}
+                          </label>
+                          <input
+                            type="text"
+                            value={walletFormData.provider || ''}
+                            onChange={(e) => setWalletFormData({ ...walletFormData, provider: e.target.value })}
+                            className={`w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-sky-500/50 ${currentTheme.text || 'text-slate-50'}`}
+                            placeholder={lang === 'ar' ? 'Vodafone / CIB' : 'Vodafone / CIB'}
+                          />
+                        </div>
+                        <div>
+                          <label className={`text-xs mb-2 block ${currentTheme.text ? 'text-slate-600' : 'text-slate-400'}`}>
+                            {lang === 'ar' ? 'رقم أو مرجع الحساب' : 'Account reference'}
+                          </label>
+                          <input
+                            type="text"
+                            value={walletFormData.accountRef || ''}
+                            onChange={(e) => setWalletFormData({ ...walletFormData, accountRef: e.target.value })}
+                            className={`w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-sky-500/50 ${currentTheme.text || 'text-slate-50'}`}
+                            placeholder={lang === 'ar' ? 'آخر 4 أرقام أو رقم المحفظة' : 'Last 4 digits or wallet number'}
+                          />
+                        </div>
                       </div>
 
                       <div className="flex gap-2">
                         {editingWalletId && (
-                          <button type="button" onClick={() => { setEditingWalletId(null); setWalletFormData({ icon: 'wallet', name: '' }); }} className="flex-1 py-2 rounded-xl bg-white/5 text-slate-300">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingWalletId(null);
+                              setWalletFormData({ icon: 'cash', kind: 'cash', name: '', provider: '', accountRef: '' });
+                            }}
+                            className="flex-1 py-2 rounded-xl bg-white/5 text-slate-300"
+                          >
                             {t.cancel}
                           </button>
                         )}
@@ -3107,7 +3561,7 @@ export default function App() {
                 <ChevronLeft className="w-5 h-5 rtl:rotate-180" />
               </button>
               <div className="min-w-0">
-                <p className="text-[0.75rem] text-text-secondary">{lang === 'ar' ? 'Ù…Ù„Ø®Øµ Ø¨ØµØ±ÙŠ Ù„ÙˆØ¶Ø¹Ùƒ Ø§Ù„Ø­Ø§Ù„ÙŠ' : 'A quick visual snapshot of your budget'}</p>
+                <p className="text-[0.75rem] text-text-secondary">{lang === 'ar' ? 'ملخص بصري لوضعك الحالي' : 'A quick visual snapshot of your budget'}</p>
                 <h3 className={`truncate text-[1.25rem] font-bold ${currentTheme.text || 'text-slate-50'}`}>
                   {t.financialBreakdown}
                 </h3>
@@ -3129,7 +3583,7 @@ export default function App() {
                   <SensitiveText mask="***" className={`text-lg font-bold text-purple-400 truncate`}>{formatCurrency(totalDebts, currency, lang, false)}</SensitiveText>
                 </div>
                 <div className="bg-white/5 rounded-2xl p-4 border border-white/5">
-                  <p className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">{t.balance || (lang === 'ar' ? 'Ø§Ù„Ø±ØµÙŠØ¯' : 'Balance')}</p>
+                  <p className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">{t.balance}</p>
                   <SensitiveText mask="***" className={`text-lg font-bold ${remainingBalance >= 0 ? 'text-emerald-400' : 'text-rose-400'} truncate`}>{formatCurrency(remainingBalance, currency, lang, false)}</SensitiveText>
                 </div>
               </div>
@@ -3168,8 +3622,8 @@ export default function App() {
               <div className="mobile-card flex min-h-[320px] flex-col items-center justify-center gap-4 border border-white/5 bg-white/[0.03] p-8 text-center">
                 <PieChart className="h-10 w-10 text-text-secondary/60" />
                 <div className="space-y-1">
-                  <p className="text-sm font-medium text-text-primary">{lang === 'ar' ? 'Ù„Ø§ ØªÙˆØ¬Ø¯ Ø¨ÙŠØ§Ù†Ø§Øª ÙƒØ§ÙÙŠØ© Ù„Ù„ØªØ­Ù„ÙŠÙ„' : 'Not enough data for analytics yet'}</p>
-                  <p className="text-xs text-text-secondary">{lang === 'ar' ? 'Ø£Ø¶Ù Ø£ÙˆÙ„ Ù…Ø¹Ø§Ù…Ù„Ø© Ù„ÙŠØ¸Ù‡Ø± Ø§Ù„ØªØ¯ÙÙ‚ Ø§Ù„Ù†Ù‚Ø¯ÙŠ ÙˆØ§Ù„ØªÙˆØ²ÙŠØ¹.' : 'Add your first transaction to unlock charts and breakdowns.'}</p>
+                  <p className="text-sm font-medium text-text-primary">{lang === 'ar' ? 'لا توجد بيانات كافية للتحليل' : 'Not enough data for analytics yet'}</p>
+                  <p className="text-xs text-text-secondary">{lang === 'ar' ? 'أضف أول معاملة ليظهر التدفق النقدي والتوزيع.' : 'Add your first transaction to unlock charts and breakdowns.'}</p>
                 </div>
                 <button
                   type="button"
@@ -3208,10 +3662,10 @@ export default function App() {
               <h2 className="text-[1.75rem] font-extrabold tracking-tight text-text-primary">{t.brand}</h2>
               <p className="mt-2 max-w-xs text-sm leading-6 text-text-secondary">
                 {lockScreenMode === 'pin'
-                  ? (lang === 'ar' ? 'Ø£Ø¯Ø®Ù„ Ø±Ù…Ø² PIN Ù„Ù„Ù…ØªØ§Ø¨Ø¹Ø©.' : 'Enter your PIN to continue.')
+                  ? (lang === 'ar' ? 'أدخل رمز PIN للمتابعة.' : 'Enter your PIN to continue.')
                   : lockScreenMode === 'question'
-                    ? (lang === 'ar' ? 'Ø£Ø¬Ø¨ Ø¹Ù† Ø³Ø¤Ø§Ù„ Ø§Ù„Ø£Ù…Ø§Ù† Ù„Ø§Ø³ØªØ¹Ø§Ø¯Ø© Ø§Ù„ÙˆØµÙˆÙ„.' : 'Answer your security question to recover access.')
-                    : (lang === 'ar' ? 'Ø£Ù†Ø´Ø¦ Ø±Ù…Ø² PIN Ø¬Ø¯ÙŠØ¯Ù‹Ø§ Ù„Ù„Ù…ØªØ§Ø¨Ø¹Ø©.' : 'Create a new PIN to continue.')}
+                    ? (lang === 'ar' ? 'أجب عن سؤال الأمان لاستعادة الوصول.' : 'Answer your security question to recover access.')
+                    : (lang === 'ar' ? 'أنشئ رمز PIN جديدًا للمتابعة.' : 'Create a new PIN to continue.')}
               </p>
 
               {lockScreenMode === 'pin' ? (
@@ -3233,7 +3687,7 @@ export default function App() {
 
                   {isPinTemporarilyLocked && (
                     <p className="mb-4 text-sm font-medium text-warning">
-                      {lang === 'ar' ? `Ø§Ù„Ù‚ÙÙ„ Ù…Ø¤Ù‚Øª Ù„Ù…Ø¯Ø© ${lockCountdownSeconds}Ø«` : `Locked for ${lockCountdownSeconds}s`}
+                      {lang === 'ar' ? `القفل مؤقت لمدة ${lockCountdownSeconds}ث` : `Locked for ${lockCountdownSeconds}s`}
                     </p>
                   )}
 
@@ -3278,7 +3732,7 @@ export default function App() {
                       disabled={!pinInput.length}
                       onClick={handlePinBackspace}
                       className="flex h-[4.5rem] w-[4.5rem] items-center justify-center rounded-full border border-white/10 bg-white/6 text-text-primary shadow-lg transition-transform active:scale-95 disabled:opacity-40"
-                      aria-label={lang === 'ar' ? 'Ø­Ø°Ù Ø±Ù‚Ù…' : 'Delete digit'}
+                      aria-label={lang === 'ar' ? 'حذف رقم' : 'Delete digit'}
                     >
                       <ChevronLeft className="h-7 w-7 rtl:rotate-180" />
                     </button>
@@ -3289,7 +3743,7 @@ export default function App() {
                     onClick={handleForgotPin}
                     className="mt-5 min-h-11 text-sm font-semibold text-accent-primary"
                   >
-                    {lang === 'ar' ? 'Ù†Ø³ÙŠØª Ø±Ù…Ø² PINØŸ' : 'Forgot PIN?'}
+                    {lang === 'ar' ? 'نسيت رمز PIN؟' : 'Forgot PIN?'}
                   </button>
                 </div>
               ) : lockScreenMode === 'question' ? (
@@ -3302,7 +3756,7 @@ export default function App() {
                     value={securityAnswerInput}
                     onChange={(e) => setSecurityAnswerInput(e.target.value)}
                     className="w-full rounded-[1.5rem] border border-white/10 bg-white/6 px-4 py-4 text-text-primary focus:border-accent-primary/50 focus:outline-none"
-                    placeholder={lang === 'ar' ? 'Ø¥Ø¬Ø§Ø¨Ø© Ø§Ù„Ø³Ø¤Ø§Ù„' : 'Your answer'}
+                    placeholder={lang === 'ar' ? 'إجابة السؤال' : 'Your answer'}
                     autoFocus
                   />
                   {securityResetError && (
@@ -3319,10 +3773,10 @@ export default function App() {
                       }}
                       className="min-h-11 rounded-2xl border border-white/10 bg-white/6 px-4 text-sm font-bold text-text-primary"
                     >
-                      {lang === 'ar' ? 'Ø±Ø¬ÙˆØ¹' : 'Back'}
+                      {lang === 'ar' ? 'رجوع' : 'Back'}
                     </button>
                     <button type="submit" className={`min-h-11 rounded-2xl px-4 text-sm font-bold ${currentTheme.btn}`}>
-                      {lang === 'ar' ? 'ØªØ­Ù‚Ù‚' : 'Verify'}
+                      {lang === 'ar' ? 'تحقق' : 'Verify'}
                     </button>
                   </div>
                 </form>
@@ -3332,11 +3786,11 @@ export default function App() {
                     {[4, 6].map((lengthOption) => (
                       <button
                         key={lengthOption}
-                        type="button"
-                        onClick={() => setResetPinLength(lengthOption as PinLength)}
-                        className={`min-h-11 rounded-2xl border text-sm font-semibold transition-colors ${resetPinLength === lengthOption ? 'border-accent-primary/50 bg-accent-primary/15 text-accent-primary' : 'border-white/10 bg-white/6 text-text-secondary'}`}
-                      >
-                        {lengthOption} {lang === 'ar' ? 'Ø£Ø±Ù‚Ø§Ù…' : 'digits'}
+                      type="button"
+                      onClick={() => setResetPinLength(lengthOption as PinLength)}
+                      className={`min-h-11 rounded-2xl border text-sm font-semibold transition-colors ${resetPinLength === lengthOption ? 'border-accent-primary/50 bg-accent-primary/15 text-accent-primary' : 'border-white/10 bg-white/6 text-text-secondary'}`}
+                    >
+                        {lengthOption} {lang === 'ar' ? 'أرقام' : 'digits'}
                       </button>
                     ))}
                   </div>
@@ -3357,7 +3811,7 @@ export default function App() {
                     value={resetPinConfirm}
                     onChange={(e) => setResetPinConfirm(e.target.value.replace(/\D/g, '').slice(0, resetPinLength))}
                     className="w-full rounded-[1.5rem] border border-white/10 bg-white/6 px-4 py-4 tracking-[0.4em] text-text-primary focus:border-accent-primary/50 focus:outline-none"
-                    placeholder={lang === 'ar' ? 'ØªØ£ÙƒÙŠØ¯ Ø§Ù„Ø±Ù…Ø²' : 'Confirm PIN'}
+                    placeholder={lang === 'ar' ? 'تأكيد الرمز' : 'Confirm PIN'}
                   />
                   {securityResetError && (
                     <p className="rounded-2xl border border-danger/25 bg-danger/10 px-4 py-3 text-sm text-danger">
@@ -3373,10 +3827,10 @@ export default function App() {
                       }}
                       className="min-h-11 rounded-2xl border border-white/10 bg-white/6 px-4 text-sm font-bold text-text-primary"
                     >
-                      {lang === 'ar' ? 'Ø±Ø¬ÙˆØ¹' : 'Back'}
+                      {lang === 'ar' ? 'رجوع' : 'Back'}
                     </button>
                     <button type="submit" className={`min-h-11 rounded-2xl px-4 text-sm font-bold ${currentTheme.btn}`}>
-                      {lang === 'ar' ? 'Ø­ÙØ¸ PIN' : 'Save PIN'}
+                      {lang === 'ar' ? 'حفظ PIN' : 'Save PIN'}
                     </button>
                   </div>
                 </form>

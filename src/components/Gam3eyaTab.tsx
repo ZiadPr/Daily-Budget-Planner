@@ -1,46 +1,98 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Users, Plus, CheckCircle, Circle, Trash2, Calendar, ArrowDownRight, ArrowUpRight, AlertTriangle } from 'lucide-react';
+import {
+  Users,
+  Plus,
+  CheckCircle,
+  Circle,
+  Trash2,
+  Calendar,
+  ArrowDownRight,
+  ArrowUpRight,
+  ChevronLeft,
+} from 'lucide-react';
 
-export default function Gam3eyaTab({ gam3eyat, setGam3eyat, setShowAddGam3eyaModal, t, currentTheme, formatCurrency, currency, lang, addTransactionDirectly }: any) {
+export default function Gam3eyaTab({
+  gam3eyat,
+  setGam3eyat,
+  setShowAddGam3eyaModal,
+  t,
+  currentTheme,
+  formatCurrency,
+  currency,
+  lang,
+  addTransactionDirectly,
+}: any) {
   const [showCompleteConfirm, setShowCompleteConfirm] = useState(false);
-  const [pendingCompletion, setPendingCompletion] = useState<{gam3eya: any, memberId: string} | null>(null);
+  const [pendingCompletion, setPendingCompletion] = useState<{ gam3eya: any; memberId: string } | null>(null);
+  const [selectedGam3eyaId, setSelectedGam3eyaId] = useState<string | null>(null);
+
+  const activeGam3eyat = useMemo(
+    () => gam3eyat.filter((gam: any) => !gam.isCompleted),
+    [gam3eyat],
+  );
+
+  const totalMonthlyCommitment = useMemo(
+    () => activeGam3eyat.reduce((sum: number, gam: any) => sum + gam.monthlyAmount, 0),
+    [activeGam3eyat],
+  );
+
+  const nextPayoutGam3eya = useMemo(() => {
+    const sorted = [...activeGam3eyat].sort((first: any, second: any) => {
+      const firstProgress = first.members.filter((member: any) => member.isPaid).length;
+      const secondProgress = second.members.filter((member: any) => member.isPaid).length;
+      return secondProgress - firstProgress;
+    });
+
+    return sorted[0] || null;
+  }, [activeGam3eyat]);
+
+  const selectedGam3eya = selectedGam3eyaId
+    ? gam3eyat.find((gam: any) => gam.id === selectedGam3eyaId) || null
+    : null;
 
   const toggleMonthPaid = (gam3eyaId: string, memberId: string) => {
-    const g = gam3eyat.find((gam: any) => gam.id === gam3eyaId);
-    if (!g) return;
-
-    const updatedMembers = g.members.map((m: any) => m.id === memberId ? { ...m, isPaid: !m.isPaid } : m);
-    const allPaid = updatedMembers.every((m: any) => m.isPaid);
-
-    if (allPaid && !g.isCompleted) {
-      setPendingCompletion({ gam3eya: { ...g, members: updatedMembers }, memberId });
-      setShowCompleteConfirm(true);
-      return; // Wait for confirmation
+    const gam3eya = gam3eyat.find((gam: any) => gam.id === gam3eyaId);
+    if (!gam3eya) {
+      return;
     }
 
-    setGam3eyat(gam3eyat.map((gam: any) => {
-      if (gam.id === gam3eyaId) {
-        return {
-          ...gam,
-          members: updatedMembers,
-          isCompleted: allPaid
-        };
-      }
-      return gam;
-    }));
+    const updatedMembers = gam3eya.members.map((member: any) =>
+      member.id === memberId ? { ...member, isPaid: !member.isPaid } : member,
+    );
+    const allPaid = updatedMembers.every((member: any) => member.isPaid);
+
+    if (allPaid && !gam3eya.isCompleted) {
+      setPendingCompletion({ gam3eya: { ...gam3eya, members: updatedMembers }, memberId });
+      setShowCompleteConfirm(true);
+      return;
+    }
+
+    setGam3eyat(
+      gam3eyat.map((gam: any) =>
+        gam.id === gam3eyaId
+          ? {
+              ...gam,
+              members: updatedMembers,
+              isCompleted: allPaid,
+            }
+          : gam,
+      ),
+    );
   };
 
   const confirmCompletion = () => {
-    if (pendingCompletion) {
-      const { gam3eya } = pendingCompletion;
-      handleReceivePayout(gam3eya);
-      setGam3eyat(gam3eyat.map((g: any) => 
-        g.id === gam3eya.id ? { ...gam3eya, isCompleted: true } : g
-      ));
-      setShowCompleteConfirm(false);
-      setPendingCompletion(null);
+    if (!pendingCompletion) {
+      return;
     }
+
+    const { gam3eya } = pendingCompletion;
+    handleReceivePayout(gam3eya);
+    setGam3eyat(
+      gam3eyat.map((item: any) => (item.id === gam3eya.id ? { ...gam3eya, isCompleted: true } : item)),
+    );
+    setShowCompleteConfirm(false);
+    setPendingCompletion(null);
   };
 
   const cancelCompletion = () => {
@@ -50,38 +102,80 @@ export default function Gam3eyaTab({ gam3eyat, setGam3eyat, setShowAddGam3eyaMod
 
   const handleDeleteGam3eya = (id: string) => {
     if (window.confirm(lang === 'ar' ? 'هل تريد حذف هذه الجمعية؟' : 'Delete this money pool?')) {
-      setGam3eyat(gam3eyat.filter((g: any) => g.id !== id));
+      setGam3eyat(gam3eyat.filter((gam: any) => gam.id !== id));
+      if (selectedGam3eyaId === id) {
+        setSelectedGam3eyaId(null);
+      }
     }
   };
 
-  const handlePayMonthly = (g: any) => {
-    // Find first unpaid month
-    const firstUnpaid = g.members.find((m: any) => !m.isPaid);
-    if (firstUnpaid) {
-      addTransactionDirectly(`${lang === 'ar' ? 'دفع قسط جمعية' : 'Gam3eya Installment'}: ${g.name}`, g.monthlyAmount, 'expense');
-      toggleMonthPaid(g.id, firstUnpaid.id);
+  const handlePayMonthly = (gam3eya: any) => {
+    const firstUnpaid = gam3eya.members.find((member: any) => !member.isPaid);
+    if (!firstUnpaid) {
+      return;
     }
+
+    addTransactionDirectly(
+      `${lang === 'ar' ? 'دفع قسط جمعية' : 'Gam3eya installment'}: ${gam3eya.name}`,
+      gam3eya.monthlyAmount,
+      'expense',
+    );
+    toggleMonthPaid(gam3eya.id, firstUnpaid.id);
   };
 
-  const handleReceivePayout = (g: any) => {
-    const totalPayout = g.monthlyAmount * g.totalMonths;
-    addTransactionDirectly(`${lang === 'ar' ? 'استلام قبض جمعية' : 'Gam3eya Payout'}: ${g.name}`, totalPayout, 'income');
+  const handleReceivePayout = (gam3eya: any) => {
+    const totalPayout = gam3eya.monthlyAmount * gam3eya.totalMonths;
+    addTransactionDirectly(
+      `${lang === 'ar' ? 'استلام قبض جمعية' : 'Gam3eya payout'}: ${gam3eya.name}`,
+      totalPayout,
+      'income',
+    );
   };
 
-  return (
+  const renderOverview = () => (
     <div className="flex flex-1 flex-col gap-4">
       <div className="flex items-end justify-between gap-3 px-1">
         <div>
-          <p className="text-[0.75rem] text-text-secondary">{lang === 'ar' ? 'الجمعيات والمواعيد القادمة' : 'Track dues and payouts'}</p>
+          <p className="text-[0.75rem] text-text-secondary">
+            {lang === 'ar' ? 'الجمعيات والمواعيد القادمة' : 'Track pools, dues, and payout turns'}
+          </p>
           <h2 className={`text-[1.25rem] font-bold ${currentTheme.text || 'text-slate-50'}`}>{t.gam3eya}</h2>
         </div>
-        <button onClick={() => setShowAddGam3eyaModal(true)} className="touch-icon-button rounded-2xl bg-sky-500/20 text-sky-400">
+        <button
+          type="button"
+          onClick={() => setShowAddGam3eyaModal(true)}
+          className="touch-icon-button rounded-2xl bg-sky-500/20 text-sky-400"
+          aria-label={t.addGam3eya}
+        >
           <Plus className="w-5 h-5" />
         </button>
       </div>
 
+      <div className="grid grid-cols-3 gap-3">
+        <div className="mobile-card border border-white/10 bg-white/[0.03] p-4">
+          <p className="text-[0.65rem] font-bold uppercase tracking-[0.2em] text-text-secondary">{t.activePools}</p>
+          <p className="mt-2 text-xl font-extrabold text-text-primary">{activeGam3eyat.length}</p>
+        </div>
+        <div className="mobile-card border border-white/10 bg-white/[0.03] p-4">
+          <p className="text-[0.65rem] font-bold uppercase tracking-[0.2em] text-text-secondary">{t.monthlyCommitment}</p>
+          <p className="mt-2 text-sm font-extrabold text-text-primary">
+            {formatCurrency(totalMonthlyCommitment, currency, lang, false)}
+          </p>
+        </div>
+        <div className="mobile-card border border-white/10 bg-white/[0.03] p-4">
+          <p className="text-[0.65rem] font-bold uppercase tracking-[0.2em] text-text-secondary">{t.nextPayout}</p>
+          <p className="mt-2 truncate text-sm font-extrabold text-text-primary">
+            {nextPayoutGam3eya ? nextPayoutGam3eya.name : '--'}
+          </p>
+        </div>
+      </div>
+
       {gam3eyat.length === 0 ? (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mobile-card flex h-56 flex-col items-center justify-center gap-4 border border-white/5 bg-white/[0.02] p-8 text-center text-slate-500">
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="mobile-card flex h-56 flex-col items-center justify-center gap-4 border border-white/5 bg-white/[0.02] p-8 text-center text-slate-500"
+        >
           <Users className="h-10 w-10 opacity-30" />
           <button
             type="button"
@@ -90,91 +184,233 @@ export default function Gam3eyaTab({ gam3eyat, setGam3eyat, setShowAddGam3eyaMod
           >
             {t.addGam3eya}
           </button>
-          <p className="text-sm">{lang === 'ar' ? 'لا توجد جمعيات حالياً.' : 'No money pools yet.'}</p>
+          <p className="text-sm">{lang === 'ar' ? 'لا توجد جمعيات حاليًا.' : 'No money pools yet.'}</p>
         </motion.div>
       ) : (
         <div className="space-y-4">
-          {gam3eyat.map((g: any) => (
-            <motion.div key={g.id} initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className={`mobile-card relative overflow-hidden border border-glass-border bg-glass-bg p-5 ${g.isCompleted ? 'opacity-70' : ''}`}>
-              <div className="flex justify-between items-start mb-4">
-                <div>
-                  <h3 className={`text-lg font-bold text-text-primary`}>{g.name} {g.isCompleted && (lang === 'ar' ? '(مكتملة)' : '(Completed)')}</h3>
-                  <p className={`text-xs text-text-secondary`}>
-                    {formatCurrency(g.monthlyAmount, currency, lang, false)} / {lang === 'ar' ? 'شهر' : 'month'}
-                  </p>
-                </div>
-                <button onClick={() => handleDeleteGam3eya(g.id)} className="touch-icon-button text-text-secondary">
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
+          {gam3eyat.map((gam3eya: any) => {
+            const paidMonths = gam3eya.members.filter((member: any) => member.isPaid).length;
+            const progress = gam3eya.totalMonths ? Math.round((paidMonths / gam3eya.totalMonths) * 100) : 0;
 
-              {!g.isCompleted && (
-                <div className="flex gap-2 mb-6">
-                  <button 
-                    onClick={() => handlePayMonthly(g)}
-                    className="flex-1 py-2 rounded-xl bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20 transition-colors flex items-center justify-center gap-2 text-xs font-medium"
-                  >
-                    <ArrowUpRight className="w-4 h-4" />
-                    {lang === 'ar' ? 'دفع القسط' : 'Pay Installment'}
-                  </button>
-                  <button 
-                    onClick={() => handleReceivePayout(g)}
-                    className="flex-1 py-2 rounded-xl bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 transition-colors flex items-center justify-center gap-2 text-xs font-medium"
-                  >
-                    <ArrowDownRight className="w-4 h-4" />
-                    {lang === 'ar' ? 'استلام القبض' : 'Receive Payout'}
-                  </button>
-                </div>
-              )}
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between text-xs font-medium text-slate-400 uppercase tracking-wider px-2">
-                  <span>{lang === 'ar' ? 'الشهور' : 'Months'}</span>
-                  <span>{lang === 'ar' ? 'الحالة' : 'Status'}</span>
-                </div>
-                {g.members.map((m: any, idx: number) => (
-                  <div key={m.id} className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5">
-                    <div className="flex items-center gap-3">
-                      <button onClick={() => toggleMonthPaid(g.id, m.id)} className={`transition-colors ${m.isPaid ? 'text-emerald-400' : 'text-slate-500 hover:text-slate-400'}`}>
-                        {m.isPaid ? <CheckCircle className="w-5 h-5" /> : <Circle className="w-5 h-5" />}
-                      </button>
-                      <span className={`font-medium ${currentTheme.text || 'text-slate-200'} ${m.isPaid ? 'line-through opacity-50' : ''}`}>
-                        {lang === 'ar' ? `الشهر ${idx + 1}` : `Month ${idx + 1}`}
-                      </span>
-                    </div>
-                    <div className={`flex items-center gap-2 text-xs font-medium ${m.isPaid ? 'text-emerald-400' : 'text-slate-400'}`}>
-                      {m.isPaid ? (lang === 'ar' ? 'تم الدفع' : 'Paid') : (lang === 'ar' ? 'في الانتظار' : 'Pending')}
-                    </div>
+            return (
+              <motion.div
+                key={gam3eya.id}
+                initial={{ y: 18, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                className={`mobile-card overflow-hidden border border-glass-border bg-glass-bg p-5 ${gam3eya.isCompleted ? 'opacity-70' : ''}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-lg font-bold text-text-primary">
+                      {gam3eya.name}
+                      {gam3eya.isCompleted ? ` • ${t.completed}` : ''}
+                    </h3>
+                    <p className="mt-1 text-xs text-text-secondary">
+                      {formatCurrency(gam3eya.monthlyAmount, currency, lang, false)}
+                      {' • '}
+                      {paidMonths}/{gam3eya.totalMonths}
+                    </p>
                   </div>
-                ))}
-              </div>
-            </motion.div>
-          ))}
+                  <button type="button" onClick={() => handleDeleteGam3eya(gam3eya.id)} className="touch-icon-button text-text-secondary">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="mt-4 space-y-2">
+                  <div className="flex items-center justify-between text-[0.7rem] font-semibold text-text-secondary">
+                    <span>{t.monthsProgress}</span>
+                    <span>{progress}%</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-white/8">
+                    <div
+                      className="h-2 rounded-full bg-accent-primary transition-all"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedGam3eyaId(gam3eya.id)}
+                    className="min-h-11 rounded-2xl border border-white/10 bg-white/5 px-4 text-xs font-bold text-text-primary"
+                  >
+                    {t.openDetails}
+                  </button>
+                  {!gam3eya.isCompleted ? (
+                    <button
+                      type="button"
+                      onClick={() => handlePayMonthly(gam3eya)}
+                      className="min-h-11 rounded-2xl bg-rose-500/10 px-4 text-xs font-bold text-rose-300"
+                    >
+                      {lang === 'ar' ? 'دفع القسط' : 'Pay installment'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleReceivePayout(gam3eya)}
+                      className="min-h-11 rounded-2xl bg-emerald-500/10 px-4 text-xs font-bold text-emerald-300"
+                    >
+                      {lang === 'ar' ? 'استلام القبض' : 'Receive payout'}
+                    </button>
+                  )}
+                </div>
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderDetails = (gam3eya: any) => (
+    <motion.div
+      key={gam3eya.id}
+      initial={{ x: lang === 'ar' ? -24 : 24, opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      exit={{ x: lang === 'ar' ? -24 : 24, opacity: 0 }}
+      className="flex flex-1 flex-col gap-4"
+    >
+      <div className="flex items-center justify-between gap-3 px-1">
+        <button
+          type="button"
+          onClick={() => setSelectedGam3eyaId(null)}
+          className="touch-icon-button border border-white/10 bg-white/5 text-text-primary"
+          aria-label={t.back}
+        >
+          <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
+        </button>
+        <div className="min-w-0 flex-1 text-center">
+          <p className="text-[0.75rem] text-text-secondary">{t.gam3eyaDetails}</p>
+          <h2 className="truncate text-[1.25rem] font-bold text-text-primary">{gam3eya.name}</h2>
+        </div>
+        <button
+          type="button"
+          onClick={() => handleDeleteGam3eya(gam3eya.id)}
+          className="touch-icon-button border border-white/10 bg-white/5 text-text-secondary"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="mobile-card border border-white/10 bg-white/[0.03] p-4">
+          <p className="text-xs text-text-secondary">{t.monthlyAmount}</p>
+          <p className="mt-2 text-base font-bold text-text-primary">
+            {formatCurrency(gam3eya.monthlyAmount, currency, lang, false)}
+          </p>
+        </div>
+        <div className="mobile-card border border-white/10 bg-white/[0.03] p-4">
+          <p className="text-xs text-text-secondary">{t.currentMonth}</p>
+          <p className="mt-2 text-base font-bold text-text-primary">
+            {gam3eya.members.filter((member: any) => member.isPaid).length + 1}/{gam3eya.totalMonths}
+          </p>
+        </div>
+      </div>
+
+      {!gam3eya.isCompleted && (
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => handlePayMonthly(gam3eya)}
+            className="min-h-11 rounded-2xl bg-rose-500/10 px-4 text-xs font-bold text-rose-300"
+          >
+            <span className="inline-flex items-center gap-2">
+              <ArrowUpRight className="h-4 w-4" />
+              {lang === 'ar' ? 'دفع القسط' : 'Pay installment'}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleReceivePayout(gam3eya)}
+            className="min-h-11 rounded-2xl bg-emerald-500/10 px-4 text-xs font-bold text-emerald-300"
+          >
+            <span className="inline-flex items-center gap-2">
+              <ArrowDownRight className="h-4 w-4" />
+              {lang === 'ar' ? 'استلام القبض' : 'Receive payout'}
+            </span>
+          </button>
         </div>
       )}
 
-      {/* Completion Confirmation Modal */}
+      <div className="space-y-3">
+        {gam3eya.members.map((member: any, index: number) => (
+          <div key={member.id} className="mobile-card flex items-center justify-between border border-white/10 bg-white/[0.03] p-4">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => toggleMonthPaid(gam3eya.id, member.id)}
+                className={`transition-colors ${member.isPaid ? 'text-emerald-400' : 'text-slate-500 hover:text-slate-300'}`}
+                aria-label={member.isPaid ? t.markPaid : lang === 'ar' ? 'تعليم الشهر كمدفوع' : 'Mark month as paid'}
+              >
+                {member.isPaid ? <CheckCircle className="h-5 w-5" /> : <Circle className="h-5 w-5" />}
+              </button>
+              <div>
+                <p className={`font-semibold ${member.isPaid ? 'line-through opacity-50' : 'text-text-primary'}`}>
+                  {lang === 'ar' ? `الشهر ${index + 1}` : `Month ${index + 1}`}
+                </p>
+                <p className="text-xs text-text-secondary">
+                  <span className="inline-flex items-center gap-1">
+                    <Calendar className="h-3.5 w-3.5" />
+                    {formatCurrency(gam3eya.monthlyAmount, currency, lang, false)}
+                  </span>
+                </p>
+              </div>
+            </div>
+            <span className={`text-xs font-bold ${member.isPaid ? 'text-emerald-400' : 'text-text-secondary'}`}>
+              {member.isPaid ? (lang === 'ar' ? 'تم الدفع' : 'Paid') : (lang === 'ar' ? 'في الانتظار' : 'Pending')}
+            </span>
+          </div>
+        ))}
+      </div>
+    </motion.div>
+  );
+
+  return (
+    <div className="flex flex-1 flex-col gap-4">
+      <AnimatePresence mode="wait">
+        {selectedGam3eya ? renderDetails(selectedGam3eya) : renderOverview()}
+      </AnimatePresence>
+
       <AnimatePresence>
         {showCompleteConfirm && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }} className={`bg-gradient-to-br ${currentTheme.card} border border-white/10 rounded-3xl shadow-2xl max-w-sm w-full p-6 text-center`}>
-              <div className="w-16 h-16 mx-auto bg-emerald-500/20 rounded-full flex items-center justify-center mb-4">
-                <CheckCircle className="w-8 h-8 text-emerald-400" />
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
+          >
+            <motion.div
+              initial={{ scale: 0.95 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.95 }}
+              className={`w-full max-w-sm rounded-3xl border border-white/10 bg-gradient-to-br ${currentTheme.card} p-6 text-center shadow-2xl`}
+            >
+              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/20">
+                <CheckCircle className="h-8 w-8 text-emerald-400" />
               </div>
-              <h3 className={`text-xl font-bold mb-2 ${currentTheme.text || 'text-white'}`}>
-                {lang === 'ar' ? 'إكمال الجمعية' : 'Complete Gam3eya'}
+              <h3 className={`mb-2 text-xl font-bold ${currentTheme.text || 'text-white'}`}>
+                {lang === 'ar' ? 'إكمال الجمعية' : 'Complete money pool'}
               </h3>
-              <p className="text-slate-400 text-sm mb-6">
-                {lang === 'ar' 
-                  ? 'لقد تم دفع جميع الأقساط. هل تريد إكمال الجمعية واستلام القبض تلقائياً؟' 
-                  : 'All installments have been paid. Do you want to complete the Gam3eya and receive the payout automatically?'}
+              <p className="mb-6 text-sm text-slate-400">
+                {lang === 'ar'
+                  ? 'تم دفع كل الأقساط. هل تريد إكمال الجمعية واستلام مبلغ القبض الآن؟'
+                  : 'All installments are paid. Do you want to complete this pool and receive the payout now?'}
               </p>
-              
+
               <div className="flex gap-3">
-                <button onClick={cancelCompletion} className={`flex-1 py-3 rounded-xl font-bold text-slate-300 bg-white/5 hover:bg-white/10 transition-colors`}>
+                <button
+                  type="button"
+                  onClick={cancelCompletion}
+                  className="flex-1 rounded-xl bg-white/5 py-3 font-bold text-slate-300 transition-colors hover:bg-white/10"
+                >
                   {t.cancel}
                 </button>
-                <button onClick={confirmCompletion} className={`flex-1 py-3 rounded-xl font-bold text-white transition-colors bg-emerald-500 hover:bg-emerald-400`}>
+                <button
+                  type="button"
+                  onClick={confirmCompletion}
+                  className="flex-1 rounded-xl bg-emerald-500 py-3 font-bold text-white transition-colors hover:bg-emerald-400"
+                >
                   {lang === 'ar' ? 'تأكيد واستلام' : 'Confirm & Receive'}
                 </button>
               </div>
